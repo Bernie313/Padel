@@ -597,6 +597,10 @@ migrate();
 goHome();
 if('serviceWorker'in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
+  let _reloaded=false;
+  navigator.serviceWorker.addEventListener('controllerchange',()=>{
+    if(!_reloaded){_reloaded=true;location.reload();}
+  });
 }
 </script>
 </body>

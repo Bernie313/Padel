@@ -1,5 +1,6 @@
-// Service worker: cachea la app para uso sin internet.
-const CACHE = 'americano-padel-v3';
+// Service worker: estrategia "red primero" para que la app se actualice sola
+// cuando hay internet, y use el caché solo cuando estás sin conexión.
+const CACHE = 'americano-padel-v4';
 const ASSETS = ['./', './index.html', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', (e) => {
@@ -12,5 +13,14 @@ self.addEventListener('activate', (e) => {
   self.clients.claim();
 });
 self.addEventListener('fetch', (e) => {
-  e.respondWith(caches.match(e.request).then((r) => r || fetch(e.request)));
+  if (e.request.method !== 'GET') return;
+  e.respondWith(
+    fetch(e.request)
+      .then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
+        return res;
+      })
+      .catch(() => caches.match(e.request).then((r) => r || caches.match('./index.html')))
+  );
 });
