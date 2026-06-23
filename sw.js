@@ -1,6 +1,6 @@
 // Service worker: estrategia "red primero" para que la app se actualice sola
 // cuando hay internet, y use el caché solo cuando estás sin conexión.
-const CACHE = 'americano-padel-v4';
+const CACHE = 'americano-padel-v5';
 const ASSETS = ['./', './index.html', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', (e) => {

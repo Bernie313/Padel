@@ -6,6 +6,8 @@
 <meta name="theme-color" content="#0b6e4f" />
 <title>Americano Pádel</title>
 <link rel="manifest" href="manifest.json" />
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --green:#0b6e4f; --green-d:#085a40; --green-l:#13a06f;
@@ -197,8 +199,8 @@ function defaultPoints(n){return n===9?20:24;}
 const KEY='padel_americano_torneos';
 function loadAll(){try{return JSON.parse(localStorage.getItem(KEY))||[];}catch(e){return[];}}
 function saveAll(list){localStorage.setItem(KEY,JSON.stringify(list));}
-function saveTournament(t){const list=loadAll();const i=list.findIndex(x=>x.id===t.id);if(i>=0)list[i]=t;else list.unshift(t);saveAll(list);}
-function deleteTournament(id){saveAll(loadAll().filter(t=>t.id!==id));}
+function saveTournament(t){const list=loadAll();const i=list.findIndex(x=>x.id===t.id);if(i>=0)list[i]=t;else list.unshift(t);saveAll(list);cloudPushTournament(t);}
+function deleteTournament(id){saveAll(loadAll().filter(t=>t.id!==id));cloudDeleteTournament(id);}
 
 /* ============ ALMACENAMIENTO: JUGADORES (roster) ============ */
 const ROSTER_KEY='padel_americano_jugadores';
@@ -209,16 +211,17 @@ function findRosterByName(nm){return loadRoster().find(p=>p.name.trim().toLowerC
 function addRosterPlayer(nm){
   nm=nm.trim(); if(!nm)return null;
   const ex=findRosterByName(nm); if(ex)return ex;
-  const r=loadRoster();const p={id:uid(),name:nm};r.push(p);saveRoster(r);return p;
+  const r=loadRoster();const p={id:uid(),name:nm};r.push(p);saveRoster(r);cloudPushRoster();return p;
 }
 function renameRosterPlayer(id,nm){
   nm=(nm||'').trim();if(!nm)return;
   const r=loadRoster(),p=r.find(x=>x.id===id);if(p){p.name=nm;saveRoster(r);}
-  const list=loadAll();let ch=false;
-  list.forEach(t=>{if(t.playerIds)t.playerIds.forEach((pid,idx)=>{if(pid===id&&t.players[idx]!==nm){t.players[idx]=nm;ch=true;}});});
-  if(ch)saveAll(list);
+  const list=loadAll();const changedT=[];
+  list.forEach(t=>{let ch=false;if(t.playerIds)t.playerIds.forEach((pid,idx)=>{if(pid===id&&t.players[idx]!==nm){t.players[idx]=nm;ch=true;}});if(ch)changedT.push(t);});
+  if(changedT.length)saveAll(list);
+  cloudPushRoster();changedT.forEach(t=>cloudPushTournament(t));
 }
-function deleteRosterPlayer(id){saveRoster(loadRoster().filter(p=>p.id!==id));}
+function deleteRosterPlayer(id){saveRoster(loadRoster().filter(p=>p.id!==id));cloudPushRoster();}
 function playerUsed(id){return loadAll().some(t=>(t.playerIds||[]).includes(id));}
 
 /* Migración: torneos viejos (solo nombres) se vinculan a jugadores del roster */
@@ -268,9 +271,91 @@ function computeRanking(){
     .sort((a,b)=>b.pts-a.pts||b.titles-a.titles||a.bestPos-b.bestPos||a.name.localeCompare(b.name));
 }
 
+/* ============ SINCRONIZACIÓN EN LA NUBE (Firebase) ============ */
+const FIREBASE_CONFIG = {
+  apiKey:"AIzaSyCJPfhRmtHfKYgWb8fZnrMLxIbQ3RbBBQg",
+  authDomain:"padel-molinos.firebaseapp.com",
+  projectId:"padel-molinos",
+  storageBucket:"padel-molinos.firebasestorage.app",
+  messagingSenderId:"156684093614",
+  appId:"1:156684093614:web:e33bf85d811f86c206453f"
+};
+const GROUP_KEY='padel_group_code';
+let db=null, cloudOn=false, cloudUnsub=[];
+function groupCode(){return localStorage.getItem(GROUP_KEY)||'';}
+function cloudReady(){return typeof firebase!=='undefined' && !!FIREBASE_CONFIG.projectId;}
+function cloudInit(){
+  if(!cloudReady())return false;
+  try{
+    if(!firebase.apps.length){
+      firebase.initializeApp(FIREBASE_CONFIG);
+      try{firebase.firestore().enablePersistence({synchronizeTabs:true}).catch(()=>{});}catch(e){}
+    }
+    db=firebase.firestore();return true;
+  }catch(e){console.warn('Firebase init falló',e);return false;}
+}
+function groupRef(){return db.collection('groups').doc(groupCode());}
+function cloudPushTournament(t){if(cloudOn&&db)groupRef().collection('tournaments').doc(t.id).set(t).catch(e=>console.warn(e));}
+function cloudDeleteTournament(id){if(cloudOn&&db)groupRef().collection('tournaments').doc(id).delete().catch(e=>console.warn(e));}
+function cloudPushRoster(){if(cloudOn&&db)groupRef().collection('meta').doc('roster').set({list:loadRoster()}).catch(e=>console.warn(e));}
+function cloudRefresh(){
+  if(document.activeElement&&document.activeElement.tagName==='INPUT')return; // no interrumpir si está escribiendo
+  if(screen==='home')renderHome();
+  else if(screen==='ranking')renderRanking();
+  else if(screen==='roster')renderRoster();
+  else if(screen==='sync')renderSync();
+  else if(screen==='tournament'&&current){const t=loadAll().find(x=>x.id===current.id);if(t){current=t;renderTournament();}}
+}
+function cloudListen(){
+  cloudUnsub.forEach(u=>{try{u();}catch(e){}});cloudUnsub=[];
+  const g=groupRef();
+  cloudUnsub.push(g.collection('meta').doc('roster').onSnapshot(s=>{
+    if(s.exists&&s.data().list){saveRoster(s.data().list);cloudRefresh();}
+  },e=>console.warn(e)));
+  cloudUnsub.push(g.collection('tournaments').onSnapshot(s=>{
+    const list=loadAll();let changed=false;
+    s.docChanges().forEach(ch=>{
+      const t=ch.doc.data(),i=list.findIndex(x=>x.id===t.id);
+      if(ch.type==='removed'){if(i>=0){list.splice(i,1);changed=true;}}
+      else{if(i>=0)list[i]=t;else list.push(t);changed=true;}
+    });
+    if(changed){list.sort((a,b)=>b.createdAt-a.createdAt);saveAll(list);cloudRefresh();}
+  },e=>console.warn(e)));
+}
+function cloudConnect(){ // al arrancar: solo escuchar (la nube manda)
+  if(!groupCode()||!cloudInit()){cloudOn=false;return;}
+  cloudOn=true;cloudListen();
+}
+async function cloudJoin(code){ // al conectarse desde el menú: fusiona lo local y sube
+  localStorage.setItem(GROUP_KEY,code);
+  if(!cloudInit()){cloudOn=false;return false;}
+  cloudOn=true;
+  try{
+    const g=groupRef();
+    const rs=await g.collection('meta').doc('roster').get();
+    const remoteRoster=(rs.exists&&rs.data().list)?rs.data().list:[];
+    const localRoster=loadRoster(),merged=[...remoteRoster],idMap={};
+    localRoster.forEach(lp=>{
+      const m=merged.find(rp=>(rp.name||'').trim().toLowerCase()===(lp.name||'').trim().toLowerCase());
+      if(m)idMap[lp.id]=m.id; else{merged.push(lp);idMap[lp.id]=lp.id;}
+    });
+    const localT=loadAll();
+    localT.forEach(t=>{if(t.playerIds)t.playerIds=t.playerIds.map(id=>idMap[id]||id);});
+    saveRoster(merged);saveAll(localT);
+    await g.collection('meta').doc('roster').set({list:merged});
+    for(const t of localT){await g.collection('tournaments').doc(t.id).set(t);}
+  }catch(e){console.warn('join merge',e);}
+  cloudListen();return true;
+}
+function cloudDisconnect(){
+  cloudUnsub.forEach(u=>{try{u();}catch(e){}});cloudUnsub=[];
+  cloudOn=false;localStorage.removeItem(GROUP_KEY);
+}
+
 /* ============ ESTADO / NAVEGACIÓN ============ */
 let current=null; // torneo abierto
 let activeTab='rondas';
+let screen='home'; // vista actual (para refrescar al recibir cambios de la nube)
 const app=document.getElementById('app');
 const titleEl=document.getElementById('title');
 const backBtn=document.getElementById('backBtn');
@@ -300,6 +385,7 @@ function goHome(){current=null;backBtn.style.display='none';titleEl.textContent=
 
 /* ============ VISTA: INICIO ============ */
 function renderHome(){
+  screen='home';
   const list=loadAll();
   let html=`<button class="btn" onclick="renderNew()">➕ Nuevo torneo</button>`;
   if(list.length||loadRoster().length){
@@ -307,6 +393,7 @@ function renderHome(){
       <button class="btn secondary" onclick="renderRanking()">🏅 Ranking</button>
       <button class="btn secondary" onclick="renderRoster()">👥 Jugadores</button></div>`;
   }
+  html+=`<button class="btn secondary" onclick="renderSync()" style="margin-top:10px">☁️ ${cloudOn?'Sincronizado · '+esc(groupCode()):'Sincronizar entre teléfonos'}</button>`;
   if(list.length===0){
     html+=`<div class="empty"><div class="big">🎾</div><div>Todavía no tienes torneos.</div><div class="muted">Crea el primero arriba.</div></div>`;
   }else{
@@ -328,6 +415,7 @@ function renderHome(){
 /* ============ VISTA: NUEVO TORNEO ============ */
 let selectedIds=[];
 function renderNew(){
+  screen='new';
   backBtn.style.display='block';titleEl.textContent='Nuevo torneo';
   selectedIds=[];
   app.innerHTML=`
@@ -410,6 +498,7 @@ function openTournament(id){
   backBtn.style.display='block';titleEl.textContent=current.name;activeTab='rondas';renderTournament();
 }
 function renderTournament(){
+  screen='tournament';
   app.innerHTML=`
   <div class="tabs">
     <button class="${activeTab==='rondas'?'active':''}" onclick="setTab('rondas')">Rondas</button>
@@ -510,7 +599,7 @@ function shareFixture(){
 
 /* ============ VISTA: RANKING (estilo FIP, histórico) ============ */
 function renderRanking(){
-  current=null;backBtn.style.display='block';titleEl.textContent='Ranking';
+  screen='ranking';current=null;backBtn.style.display='block';titleEl.textContent='Ranking';
   const rk=computeRanking();
   const incompletos=loadAll().filter(t=>t.playerIds&&!isComplete(t)).length;
   let h='';
@@ -556,7 +645,7 @@ function shareRanking(){
 
 /* ============ VISTA: JUGADORES (roster) ============ */
 function renderRoster(){
-  current=null;backBtn.style.display='block';titleEl.textContent='Jugadores';
+  screen='roster';current=null;backBtn.style.display='block';titleEl.textContent='Jugadores';
   const roster=loadRoster();
   let h=`<div class="card">
     <label>Agregar jugador</label>
@@ -592,8 +681,54 @@ function rosterDelete(id){
   modalConfirm(msg,()=>{deleteRosterPlayer(id);renderRoster();});
 }
 
+/* ============ VISTA: SINCRONIZACIÓN ============ */
+function renderSync(){
+  screen='sync';current=null;backBtn.style.display='block';titleEl.textContent='Sincronización';
+  const code=groupCode();
+  if(!cloudReady()){
+    app.innerHTML=`<div class="card">
+      <div class="center" style="font-size:40px">☁️</div>
+      <p>La sincronización todavía no está configurada en esta versión.</p>
+      <p class="muted">Falta pegar la configuración de Firebase. Cuando esté lista, aquí podrás crear o unirte a un grupo.</p>
+    </div>`;return;
+  }
+  let h;
+  if(code&&cloudOn){
+    h=`<div class="card center">
+      <div style="font-size:42px">☁️✅</div>
+      <p style="margin:6px 0 2px">Conectado al grupo</p>
+      <p style="font-size:24px;font-weight:800;letter-spacing:2px;color:var(--accent)">${esc(code)}</p>
+      <p class="muted">Todos los que usen este mismo código comparten los torneos y el ranking, en tiempo real.</p>
+      <button class="btn wa" onclick="shareGroupCode()">📤 Invitar al grupo</button>
+      <button class="btn danger" onclick="doDisconnect()">Desconectar este teléfono</button>
+    </div>`;
+  }else{
+    h=`<div class="card">
+      <p>Comparte tus torneos y el ranking entre varios teléfonos con un <b>código de grupo</b>.</p>
+      <label>Código del grupo</label>
+      <input id="grpCode" placeholder="Ej: MOLINOS2026" value="${esc(code)}" autocapitalize="characters" autocorrect="off"/>
+      <p class="muted">Inventa un código y compártelo con tus amigos, o escribe el de tu grupo para unirte.</p>
+      <button class="btn" onclick="doConnect()">Conectar</button>
+    </div>`;
+  }
+  app.innerHTML=h;
+}
+function doConnect(){
+  const v=(document.getElementById('grpCode').value||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(v.length<3){toast('El código debe tener al menos 3 caracteres');return;}
+  toast('Conectando…');
+  cloudJoin(v).then(ok=>{ok?(toast('¡Conectado!'),renderSync()):toast('No se pudo conectar');});
+}
+function doDisconnect(){
+  modalConfirm('¿Desconectar este teléfono del grupo?\nTus torneos quedan guardados localmente.',()=>{cloudDisconnect();renderSync();});
+}
+function shareGroupCode(){
+  share(`🎾 Únete a nuestro grupo de Pádel Americano:\n\n1) Abre: ${location.origin}${location.pathname}\n2) Entra a ☁️ Sincronizar\n3) Escribe el código: *${groupCode()}*`);
+}
+
 /* ============ ARRANQUE ============ */
 migrate();
+cloudConnect();
 goHome();
 if('serviceWorker'in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
