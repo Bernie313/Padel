@@ -1,0 +1,13 @@
+{
+  "name": "Americano Pádel",
+  "short_name": "Americano",
+  "description": "Arma torneos americanos de pádel balanceados (8, 9 o más jugadores)",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f1115",
+  "theme_color": "#0b6e4f",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

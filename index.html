@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0b6e4f" />
+<title>Americano Pádel</title>
+<link rel="manifest" href="manifest.json" />
+<style>
+  :root{
+    --green:#0b6e4f; --green-d:#085a40; --green-l:#13a06f;
+    --bg:#0f1115; --card:#1a1d23; --card2:#23272f; --line:#2c313a;
+    --txt:#eef1f4; --muted:#9aa3ad; --accent:#c8ff3d; --gold:#ffd24a;
+    --red:#ff5d5d;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{margin:0; padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg); color:var(--txt); line-height:1.4;
+    padding-bottom:env(safe-area-inset-bottom);
+  }
+  header{
+    background:linear-gradient(135deg,var(--green),var(--green-d));
+    padding:calc(14px + env(safe-area-inset-top)) 16px 14px;
+    position:sticky; top:0; z-index:10; box-shadow:0 2px 12px rgba(0,0,0,.4);
+    display:flex; align-items:center; gap:10px;
+  }
+  header .logo{font-size:24px}
+  header h1{font-size:18px; margin:0; font-weight:700; letter-spacing:.3px; flex:1}
+  header button.back{
+    background:rgba(255,255,255,.15); border:0; color:#fff; font-size:15px;
+    padding:6px 12px; border-radius:8px; cursor:pointer
+  }
+  main{padding:16px; max-width:680px; margin:0 auto}
+  h2{font-size:16px; margin:18px 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; font-weight:700}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px}
+  label{display:block; font-size:13px; color:var(--muted); margin:12px 0 5px; font-weight:600}
+  input,select{
+    width:100%; padding:12px; border-radius:10px; border:1px solid var(--line);
+    background:var(--card2); color:var(--txt); font-size:16px; outline:none
+  }
+  input:focus,select:focus{border-color:var(--green-l)}
+  .btn{
+    display:block; width:100%; padding:15px; border:0; border-radius:12px;
+    background:linear-gradient(135deg,var(--green-l),var(--green)); color:#fff;
+    font-size:16px; font-weight:700; cursor:pointer; margin-top:14px; transition:.15s
+  }
+  .btn:active{transform:scale(.98)}
+  .btn.secondary{background:var(--card2); border:1px solid var(--line)}
+  .btn.wa{background:linear-gradient(135deg,#25d366,#128c7e)}
+  .btn.danger{background:var(--card2); color:var(--red); border:1px solid var(--line)}
+  .row{display:flex; gap:10px}
+  .row>*{flex:1}
+  .pill{display:inline-block; background:var(--card2); border:1px solid var(--line); border-radius:20px; padding:4px 12px; font-size:12px; color:var(--muted); margin:2px}
+  .muted{color:var(--muted); font-size:13px}
+  .center{text-align:center}
+
+  /* lista torneos */
+  .tlist .titem{display:flex; align-items:center; gap:12px; cursor:pointer}
+  .tlist .titem .ic{font-size:22px}
+  .tlist .titem .meta{flex:1}
+  .tlist .titem .meta .nm{font-weight:700}
+  .tlist .titem .meta .sub{font-size:12px; color:var(--muted)}
+  .empty{text-align:center; color:var(--muted); padding:40px 10px}
+  .empty .big{font-size:46px; margin-bottom:10px}
+
+  /* tabs */
+  .tabs{display:flex; background:var(--card); border-radius:12px; padding:4px; margin-bottom:14px; border:1px solid var(--line)}
+  .tabs button{flex:1; padding:11px; border:0; background:transparent; color:var(--muted); font-weight:700; font-size:14px; border-radius:9px; cursor:pointer}
+  .tabs button.active{background:var(--green); color:#fff}
+
+  /* rondas */
+  .round-h{display:flex; align-items:center; gap:8px; margin:18px 0 8px}
+  .round-h .num{background:var(--green); color:#fff; width:28px; height:28px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:14px}
+  .round-h .ttl{font-weight:800; font-size:15px; flex:1}
+  .round-h .rest{font-size:11px; color:var(--gold)}
+  .match{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:10px}
+  .match .court{font-size:11px; color:var(--muted); margin-bottom:8px; letter-spacing:.5px}
+  .team{display:flex; align-items:center; gap:8px; margin:4px 0}
+  .team .names{flex:1; font-weight:600; font-size:14px}
+  .team .sc{width:64px}
+  .team .sc input{text-align:center; font-weight:800; font-size:18px; padding:8px}
+  .vs{text-align:center; color:var(--muted); font-size:11px; margin:2px 0; font-weight:700}
+  .team.win .names{color:var(--accent)}
+
+  /* tabla posiciones */
+  table{width:100%; border-collapse:collapse}
+  th,td{padding:11px 8px; text-align:left; border-bottom:1px solid var(--line); font-size:14px}
+  th{color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.5px}
+  td.n{text-align:center; font-weight:800; width:34px}
+  td.pts{text-align:right; font-weight:800; color:var(--accent)}
+  td.dif{text-align:right; color:var(--muted); font-size:12px}
+  tr.top1 td.n{color:var(--gold)}
+  tr.top2 td.n{color:#cfd3d8}
+  tr.top3 td.n{color:#d8a26a}
+
+  .players-grid input{margin-bottom:8px}
+  .toast{position:fixed; left:50%; bottom:30px; transform:translateX(-50%); background:var(--card2); border:1px solid var(--line); color:var(--txt); padding:12px 20px; border-radius:30px; font-size:14px; z-index:50; box-shadow:0 6px 20px rgba(0,0,0,.5); opacity:0; transition:.3s; pointer-events:none}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">🎾</span>
+  <h1 id="title">Americano Pádel</h1>
+  <button class="back" id="backBtn" style="display:none" onclick="goHome()">Inicio</button>
+</header>
+<main id="app"></main>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============ SCHEDULER (validado: 8j perfecto, 9j óptimo) ============ */
+function mulberry32(seed){return function(){seed|=0;seed=(seed+0x6D2B79F5)|0;let t=Math.imul(seed^(seed>>>15),1|seed);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;};}
+function shuffle(arr,rnd){for(let i=arr.length-1;i>0;i--){const j=Math.floor(rnd()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];}return arr;}
+function emptyMatrix(n){return Array.from({length:n},()=>new Array(n).fill(0));}
+function buildOnce(n,rounds,rnd){
+  const courts=Math.floor(n/4),playing=courts*4,sitPerRound=n-playing;
+  const partner=emptyMatrix(n),opp=emptyMatrix(n),rest=new Array(n).fill(0),schedule=[];
+  for(let r=0;r<rounds;r++){
+    let players=shuffle([...Array(n).keys()],rnd);
+    players.sort((a,b)=>rest[a]-rest[b]);
+    const sitting=players.slice(0,sitPerRound),active=players.slice(sitPerRound);
+    sitting.forEach(p=>rest[p]++);
+    const avail=shuffle([...active],rnd),pairs=[],used=new Set();
+    while(avail.length){
+      const a=avail.find(x=>!used.has(x)); if(a===undefined)break; used.add(a);
+      let best=null,bestCost=Infinity;
+      for(const b of avail){if(used.has(b)||b===a)continue;const cost=partner[a][b]*100+opp[a][b];if(cost<bestCost){bestCost=cost;best=b;}}
+      used.add(best); pairs.push([a,best]);
+    }
+    const courtList=[],usedPairs=new Set();
+    for(let i=0;i<pairs.length;i++){
+      if(usedPairs.has(i))continue; usedPairs.add(i);
+      let best=-1,bestCost=Infinity;
+      for(let j=0;j<pairs.length;j++){
+        if(usedPairs.has(j)||j===i)continue;
+        const[a,b]=pairs[i],[c,d]=pairs[j];
+        const cost=opp[a][c]+opp[a][d]+opp[b][c]+opp[b][d];
+        if(cost<bestCost){bestCost=cost;best=j;}
+      }
+      if(best===-1)break; usedPairs.add(best); courtList.push([pairs[i],pairs[best]]);
+    }
+    const roundMatches=[];
+    for(const[t1,t2]of courtList){
+      partner[t1[0]][t1[1]]++;partner[t1[1]][t1[0]]++;partner[t2[0]][t2[1]]++;partner[t2[1]][t2[0]]++;
+      for(const x of t1)for(const y of t2){opp[x][y]++;opp[y][x]++;}
+      roundMatches.push({teamA:t1,teamB:t2,scoreA:null,scoreB:null});
+    }
+    schedule.push({matches:roundMatches,resting:sitting});
+  }
+  return{schedule,partner,opp,rest};
+}
+function scoreOf(n,res){
+  const{partner,opp,rest}=res;let s=0,pVals=[];
+  for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)pVals.push(partner[i][j]);
+  const pIdeal=pVals.reduce((a,b)=>a+b,0)/pVals.length;
+  for(const v of pVals)s+=Math.pow(v-pIdeal,2)*50+(v>1?(v-1)*200:0);
+  let oVals=[];for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)oVals.push(opp[i][j]);
+  const oIdeal=oVals.reduce((a,b)=>a+b,0)/oVals.length;
+  for(const v of oVals)s+=Math.pow(v-oIdeal,2)*5;
+  const rIdeal=rest.reduce((a,b)=>a+b,0)/n;
+  for(const v of rest)s+=Math.pow(v-rIdeal,2)*30;
+  return s;
+}
+function generateSchedule(n,rounds,opts={}){
+  const restarts=opts.restarts||4000;let seedBase=opts.seed||(Date.now()%100000);
+  let best=null,bestScore=Infinity;
+  for(let k=0;k<restarts;k++){
+    const rnd=mulberry32(seedBase+k*2654435761);
+    const res=buildOnce(n,rounds,rnd);const sc=scoreOf(n,res);
+    if(sc<bestScore){bestScore=sc;best=res;}
+    if(bestScore===0)break;
+  }
+  return{schedule:best.schedule,score:bestScore};
+}
+function defaultRounds(n){const m={4:3,5:5,6:5,7:7,8:7,9:9,10:9,11:11,12:11};return m[n]||n-1;}
+function defaultPoints(n){return n===9?20:24;}
+
+/* ============ ALMACENAMIENTO ============ */
+const KEY='padel_americano_torneos';
+function loadAll(){try{return JSON.parse(localStorage.getItem(KEY))||[];}catch(e){return[];}}
+function saveAll(list){localStorage.setItem(KEY,JSON.stringify(list));}
+function saveTournament(t){const list=loadAll();const i=list.findIndex(x=>x.id===t.id);if(i>=0)list[i]=t;else list.unshift(t);saveAll(list);}
+function deleteTournament(id){saveAll(loadAll().filter(t=>t.id!==id));}
+
+/* ============ ESTADO / NAVEGACIÓN ============ */
+let current=null; // torneo abierto
+let activeTab='rondas';
+const app=document.getElementById('app');
+const titleEl=document.getElementById('title');
+const backBtn=document.getElementById('backBtn');
+
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),1800);}
+function esc(s){return(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+function goHome(){current=null;backBtn.style.display='none';titleEl.textContent='Americano Pádel';renderHome();}
+
+/* ============ VISTA: INICIO ============ */
+function renderHome(){
+  const list=loadAll();
+  let html=`<button class="btn" onclick="renderNew()">➕ Nuevo torneo</button>`;
+  if(list.length===0){
+    html+=`<div class="empty"><div class="big">🎾</div><div>Todavía no tienes torneos.</div><div class="muted">Crea el primero arriba.</div></div>`;
+  }else{
+    html+=`<h2>Tus torneos</h2><div class="card tlist">`;
+    list.forEach((t,i)=>{
+      const done=t.schedule.flatMap(r=>r.matches).filter(m=>m.scoreA!=null).length;
+      const total=t.schedule.flatMap(r=>r.matches).length;
+      html+=`<div class="titem" onclick="openTournament('${t.id}')" ${i<list.length-1?'style="border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:12px"':''}>
+        <span class="ic">🏆</span>
+        <div class="meta"><div class="nm">${esc(t.name)}</div>
+        <div class="sub">${t.numPlayers} jugadores · ${done}/${total} partidos · ${new Date(t.createdAt).toLocaleDateString('es')}</div></div>
+        <span class="muted">›</span></div>`;
+    });
+    html+=`</div>`;
+  }
+  app.innerHTML=html;
+}
+
+/* ============ VISTA: NUEVO TORNEO ============ */
+function renderNew(){
+  backBtn.style.display='block';titleEl.textContent='Nuevo torneo';
+  app.innerHTML=`
+  <div class="card">
+    <label>Nombre del torneo</label>
+    <input id="tName" placeholder="Ej: Americano del sábado" value="Americano ${new Date().toLocaleDateString('es')}"/>
+    <label>Número de jugadores</label>
+    <select id="tNum" onchange="onNumChange()">
+      ${[6,7,8,9,10,11,12].map(n=>`<option value="${n}" ${n===8?'selected':''}>${n} jugadores</option>`).join('')}
+    </select>
+    <div class="row">
+      <div><label>Puntos por partido</label><input id="tPoints" type="number" inputmode="numeric" value="24"/></div>
+      <div><label>Rondas</label><input id="tRounds" type="number" inputmode="numeric" value="7"/></div>
+    </div>
+    <p class="muted" id="hint" style="margin-top:10px"></p>
+  </div>
+  <div class="card">
+    <h2 style="margin-top:0">Jugadores</h2>
+    <div class="players-grid" id="players"></div>
+  </div>
+  <button class="btn" onclick="doGenerate()">⚙️ Generar fixture</button>`;
+  onNumChange();
+}
+function onNumChange(){
+  const n=+document.getElementById('tNum').value;
+  document.getElementById('tPoints').value=defaultPoints(n);
+  document.getElementById('tRounds').value=defaultRounds(n);
+  const courts=Math.floor(n/4),sit=n-courts*4;
+  document.getElementById('hint').innerHTML=
+    `Cada ronda: <b>${courts}</b> cancha(s), <b>${sit}</b> en descanso. `+
+    (n===9?'Con 9 todos descansan 1 vez y juegas con cada quien una vez. 👌':
+     n===8?'Con 8 juegas con cada compañero una vez y nadie descansa. 👌':'');
+  const cont=document.getElementById('players');
+  const prev=[...cont.querySelectorAll('input')].map(i=>i.value);
+  let h='';for(let i=0;i<n;i++)h+=`<input id="p${i}" placeholder="Jugador ${i+1}" value="${esc(prev[i]||'')}"/>`;
+  cont.innerHTML=h;
+}
+function doGenerate(){
+  const n=+document.getElementById('tNum').value;
+  const players=[];for(let i=0;i<n;i++){let v=document.getElementById('p'+i).value.trim();players.push(v||('Jugador '+(i+1)));}
+  const pts=+document.getElementById('tPoints').value||defaultPoints(n);
+  const rounds=+document.getElementById('tRounds').value||defaultRounds(n);
+  const name=document.getElementById('tName').value.trim()||'Americano';
+  toast('Generando fixture balanceado…');
+  setTimeout(()=>{
+    const{schedule}=generateSchedule(n,rounds,{restarts:5000});
+    const t={id:'t'+Date.now(),name,createdAt:Date.now(),numPlayers:n,players,pointsPerMatch:pts,numRounds:rounds,schedule};
+    saveTournament(t);openTournament(t.id);
+  },30);
+}
+
+/* ============ VISTA: TORNEO ============ */
+function openTournament(id){
+  current=loadAll().find(t=>t.id===id);if(!current)return goHome();
+  backBtn.style.display='block';titleEl.textContent=current.name;activeTab='rondas';renderTournament();
+}
+function renderTournament(){
+  app.innerHTML=`
+  <div class="tabs">
+    <button class="${activeTab==='rondas'?'active':''}" onclick="setTab('rondas')">Rondas</button>
+    <button class="${activeTab==='tabla'?'active':''}" onclick="setTab('tabla')">Posiciones</button>
+  </div>
+  <div id="tabContent"></div>`;
+  activeTab==='rondas'?renderRondas():renderTabla();
+}
+function setTab(t){activeTab=t;renderTournament();}
+
+function pname(i){return current.players[i];}
+function renderRondas(){
+  const c=document.getElementById('tabContent');let h='';
+  current.schedule.forEach((rd,ri)=>{
+    const restNames=rd.resting.map(pname).join(', ');
+    h+=`<div class="round-h"><span class="num">${ri+1}</span><span class="ttl">Ronda ${ri+1}</span>
+      ${rd.resting.length?`<span class="rest">😴 Descansa: ${esc(restNames)}</span>`:''}</div>`;
+    rd.matches.forEach((m,mi)=>{
+      const aWin=m.scoreA!=null&&m.scoreA>m.scoreB, bWin=m.scoreB!=null&&m.scoreB>m.scoreA;
+      h+=`<div class="match"><div class="court">🏟️ Cancha ${mi+1}</div>
+        <div class="team ${aWin?'win':''}"><span class="names">${esc(pname(m.teamA[0]))} & ${esc(pname(m.teamA[1]))}</span>
+          <span class="sc"><input type="number" inputmode="numeric" value="${m.scoreA??''}" placeholder="–"
+            onchange="setScore(${ri},${mi},'A',this.value)"/></span></div>
+        <div class="vs">VS · suma ${current.pointsPerMatch}</div>
+        <div class="team ${bWin?'win':''}"><span class="names">${esc(pname(m.teamB[0]))} & ${esc(pname(m.teamB[1]))}</span>
+          <span class="sc"><input type="number" inputmode="numeric" value="${m.scoreB??''}" placeholder="–"
+            onchange="setScore(${ri},${mi},'B',this.value)"/></span></div></div>`;
+    });
+  });
+  h+=`<button class="btn wa" onclick="shareFixture()">📤 Compartir fixture por WhatsApp</button>`;
+  c.innerHTML=h;
+}
+function setScore(ri,mi,team,val){
+  const m=current.schedule[ri].matches[mi];const total=current.pointsPerMatch;
+  if(val===''){m.scoreA=null;m.scoreB=null;}
+  else{let v=Math.max(0,Math.min(total,parseInt(val)||0));
+    if(team==='A'){m.scoreA=v;m.scoreB=total-v;}else{m.scoreB=v;m.scoreA=total-v;}}
+  saveTournament(current);renderRondas();
+}
+
+function computeStandings(){
+  const n=current.numPlayers;
+  const st=current.players.map((nm,i)=>({i,name:nm,pts:0,pf:0,pa:0,pj:0}));
+  current.schedule.forEach(rd=>rd.matches.forEach(m=>{
+    if(m.scoreA==null)return;
+    for(const p of m.teamA){st[p].pts+=m.scoreA;st[p].pf+=m.scoreA;st[p].pa+=m.scoreB;st[p].pj++;}
+    for(const p of m.teamB){st[p].pts+=m.scoreB;st[p].pf+=m.scoreB;st[p].pa+=m.scoreA;st[p].pj++;}
+  }));
+  st.forEach(s=>s.dif=s.pf-s.pa);
+  st.sort((a,b)=>b.pts-a.pts||b.dif-a.dif||a.name.localeCompare(b.name));
+  return st;
+}
+function renderTabla(){
+  const c=document.getElementById('tabContent');const st=computeStandings();
+  let h=`<div class="card" style="padding:0;overflow:hidden"><table><thead><tr>
+    <th class="n">#</th><th>Jugador</th><th style="text-align:center">PJ</th>
+    <th style="text-align:right">Puntos</th><th style="text-align:right">Dif</th></tr></thead><tbody>`;
+  st.forEach((s,i)=>{
+    const cls=i===0?'top1':i===1?'top2':i===2?'top3':'';
+    const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1);
+    h+=`<tr class="${cls}"><td class="n">${medal}</td><td>${esc(s.name)}</td>
+      <td style="text-align:center">${s.pj}</td><td class="pts">${s.pts}</td>
+      <td class="dif">${s.dif>=0?'+':''}${s.dif}</td></tr>`;
+  });
+  h+=`</tbody></table></div>
+    <p class="muted center">Desempate por diferencia de puntos (a favor − en contra).</p>
+    <button class="btn wa" onclick="shareStandings()">📤 Compartir posiciones por WhatsApp</button>
+    <button class="btn danger" onclick="confirmDelete()">🗑️ Eliminar torneo</button>`;
+  c.innerHTML=h;
+}
+function confirmDelete(){if(confirm('¿Eliminar este torneo? No se puede deshacer.')){deleteTournament(current.id);goHome();}}
+
+/* ============ COMPARTIR ============ */
+function share(text){
+  if(navigator.share){navigator.share({text}).catch(()=>{});}
+  else{window.open('https://wa.me/?text='+encodeURIComponent(text),'_blank');}
+}
+function shareStandings(){
+  const st=computeStandings();
+  let t=`🎾 *${current.name}* — Posiciones\n\n`;
+  st.forEach((s,i)=>{const m=i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}.`;
+    t+=`${m} ${s.name} — *${s.pts}* pts (${s.dif>=0?'+':''}${s.dif})\n`;});
+  t+=`\nGenerado con Americano Pádel`;share(t);
+}
+function shareFixture(){
+  let t=`🎾 *${current.name}* — Fixture\n${current.numPlayers} jugadores · suma ${current.pointsPerMatch} por partido\n`;
+  current.schedule.forEach((rd,ri)=>{
+    t+=`\n*Ronda ${ri+1}*\n`;
+    rd.matches.forEach((m,mi)=>{t+=`🏟️ ${pname(m.teamA[0])} & ${pname(m.teamA[1])}  vs  ${pname(m.teamB[0])} & ${pname(m.teamB[1])}\n`;});
+    if(rd.resting.length)t+=`😴 Descansa: ${rd.resting.map(pname).join(', ')}\n`;
+  });
+  share(t);
+}
+
+/* ============ ARRANQUE ============ */
+goHome();
+if('serviceWorker'in navigator && location.protocol.startsWith('http')){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
+</script>
+</body>
+</html>
