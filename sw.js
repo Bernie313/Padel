@@ -1,5 +1,5 @@
 // Service worker: cachea la app para uso sin internet.
-const CACHE = 'americano-padel-v1';
+const CACHE = 'americano-padel-v3';
 const ASSETS = ['./', './index.html', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', (e) => {
