@@ -257,11 +257,63 @@ function assignPositions(st){
   }
   return out;
 }
+/* ---- MODO PAREJAS FIJAS: round-robin de equipos ---- */
+function roundRobinTeams(nt){
+  let arr=[...Array(nt).keys()];const bye=nt%2!==0;if(bye)arr.push(-1);
+  const m=arr.length,rounds=[];
+  for(let r=0;r<m-1;r++){
+    const pairs=[];
+    for(let i=0;i<m/2;i++){const a=arr[i],b=arr[m-1-i];if(a!==-1&&b!==-1)pairs.push([a,b]);}
+    rounds.push(pairs);
+    arr.splice(1,0,arr.pop()); // rotar dejando fijo el primero
+  }
+  return rounds;
+}
+function buildPairsSchedule(teams){
+  const all=teams.reduce((a,t)=>a.concat(t),[]);
+  return roundRobinTeams(teams.length).map(round=>{
+    const matches=[],playing=new Set();
+    round.forEach(([a,b])=>{
+      matches.push({teamA:teams[a].slice(),teamB:teams[b].slice(),scoreA:null,scoreB:null});
+      teams[a].forEach(p=>playing.add(p));teams[b].forEach(p=>playing.add(p));
+    });
+    return {matches,resting:all.filter(p=>!playing.has(p))};
+  });
+}
+function computeTeamStandings(t){
+  const key=p=>p.slice().sort((a,b)=>a-b).join(',');
+  const teams=(t.teams||[]).map((pair,ti)=>({ti,pair,name:pair.map(pi=>t.players[pi]).join(' & '),pts:0,pf:0,pa:0,pj:0,g:0,p:0,e:0}));
+  const k2t={};teams.forEach(tm=>k2t[key(tm.pair)]=tm);
+  t.schedule.forEach(rd=>rd.matches.forEach(m=>{
+    if(m.scoreA==null)return;
+    const A=k2t[key(m.teamA)],B=k2t[key(m.teamB)];if(!A||!B)return;
+    const aw=m.scoreA>m.scoreB,bw=m.scoreB>m.scoreA;
+    A.pts+=m.scoreA;A.pf+=m.scoreA;A.pa+=m.scoreB;A.pj++;if(aw)A.g++;else if(bw)A.p++;else A.e++;
+    B.pts+=m.scoreB;B.pf+=m.scoreB;B.pa+=m.scoreA;B.pj++;if(bw)B.g++;else if(aw)B.p++;else B.e++;
+  }));
+  teams.forEach(tm=>tm.dif=tm.pf-tm.pa);
+  teams.sort((a,b)=>b.pts-a.pts||b.dif-a.dif||a.name.localeCompare(b.name));
+  return teams;
+}
+
 function computeRanking(){
   const roster=loadRoster(),stats={};
   roster.forEach(p=>stats[p.id]={id:p.id,name:p.name,pts:0,tournaments:0,titles:0,amer:0,bestPos:99,results:[]});
   loadAll().slice().reverse().forEach(t=>{ // del más viejo al más nuevo
     if(!isComplete(t)||!t.playerIds)return;
+    if(t.mode==='pairs'&&t.teams){
+      assignPositions(computeTeamStandings(t)).forEach(row=>{
+        row.pair.forEach(pi=>{
+          const id=t.playerIds[pi];if(!id||!stats[id])return;
+          const s=stats[id];
+          s.pts+=row.posPoints;s.amer+=row.pts;s.tournaments++;
+          if(row.position===1)s.titles++;
+          if(row.position<s.bestPos)s.bestPos=row.position;
+          s.results.push({name:t.name,date:t.createdAt,position:row.position,posPoints:row.posPoints,amer:row.pts,np:t.teams.length,pairs:true});
+        });
+      });
+      return;
+    }
     assignPositions(computeStandings(t)).forEach(row=>{
       const id=t.playerIds[row.i];if(!id||!stats[id])return;
       const s=stats[id];
@@ -408,7 +460,7 @@ function renderHome(){
       html+=`<div class="titem" onclick="openTournament('${t.id}')" ${i<list.length-1?'style="border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:12px"':''}>
         <span class="ic">🏆</span>
         <div class="meta"><div class="nm">${esc(t.name)}${t.closed?' 🔒':''}</div>
-        <div class="sub">${t.numPlayers} jugadores · ${done}/${total} partidos · ${new Date(t.createdAt).toLocaleDateString('es')}</div></div>
+        <div class="sub">${t.mode==='pairs'?'👥 Parejas':'🎾 Americano'} · ${t.numPlayers} jug. · ${done}/${total} partidos · ${new Date(t.createdAt).toLocaleDateString('es')}</div></div>
         <button class="chip-sel" style="margin:0" onclick="event.stopPropagation();deleteTournamentConfirm('${t.id}')">🗑️</button></div>`;
     });
     html+=`</div>`;
@@ -417,23 +469,35 @@ function renderHome(){
 }
 
 /* ============ VISTA: NUEVO TORNEO ============ */
-let selectedIds=[];
+let selectedIds=[], newMode='americano', pairMethod='ranking';
+let manualPairs=[], manualPending=null, randomTeams=null;
+let newName='', newPoints=null;
+function maxPlayers(){return newMode==='pairs'?16:12;}
+function captureNewForm(){
+  const nEl=document.getElementById('tName');if(nEl)newName=nEl.value;
+  const pEl=document.getElementById('tPoints');if(pEl)newPoints=pEl.value;
+}
+function setMode(m){captureNewForm();newMode=m;newName='';manualPairs=[];manualPending=null;randomTeams=null;renderNew();}
 function renderNew(){
   screen='new';
   backBtn.style.display='block';titleEl.textContent='Nuevo torneo';
-  selectedIds=[];
+  const defName=(newMode==='pairs'?'Parejas ':'Americano ')+new Date().toLocaleDateString('es');
   app.innerHTML=`
   <div class="card">
+    <div class="tabs" style="margin-bottom:14px">
+      <button class="${newMode==='americano'?'active':''}" onclick="setMode('americano')">Americano</button>
+      <button class="${newMode==='pairs'?'active':''}" onclick="setMode('pairs')">Parejas fijas</button>
+    </div>
     <label>Nombre del torneo</label>
-    <input id="tName" placeholder="Ej: Americano del sábado" value="Americano ${new Date().toLocaleDateString('es')}"/>
+    <input id="tName" value="${esc(newName||defName)}"/>
     <div class="row">
-      <div><label>Puntos por partido</label><input id="tPoints" type="number" inputmode="numeric" value="24"/></div>
-      <div><label>Rondas</label><input id="tRounds" type="number" inputmode="numeric" value="7"/></div>
+      <div><label>Puntos por partido</label><input id="tPoints" type="number" inputmode="numeric" value="${newPoints!=null?esc(String(newPoints)):24}"/></div>
+      <div><label>Rondas</label><input id="tRounds" type="number" inputmode="numeric" value="" ${newMode==='pairs'?'readonly':''}/></div>
     </div>
     <p class="muted" id="hint" style="margin-top:10px"></p>
   </div>
   <div class="card">
-    <h2 style="margin-top:0">Jugadores del torneo</h2>
+    <h2 style="margin-top:0">Jugadores${newMode==='pairs'?' (número par)':''}</h2>
     <p class="muted" id="selCount"></p>
     <div id="chips"></div>
     <label>Agregar jugador nuevo</label>
@@ -442,8 +506,16 @@ function renderNew(){
       <button class="btn secondary" style="margin-top:0;max-width:110px" onclick="addNewPlayerToRoster()">Agregar</button>
     </div>
   </div>
-  <button class="btn" onclick="doGenerate()">⚙️ Generar fixture</button>`;
+  ${newMode==='pairs'?`<div class="card"><h2 style="margin-top:0">Formación de parejas</h2>
+    <div class="tabs" style="margin-bottom:10px">
+      <button class="${pairMethod==='ranking'?'active':''}" onclick="setPairMethod('ranking')">Ranking</button>
+      <button class="${pairMethod==='random'?'active':''}" onclick="setPairMethod('random')">Aleatorio</button>
+      <button class="${pairMethod==='manual'?'active':''}" onclick="setPairMethod('manual')">Manual</button>
+    </div>
+    <div id="pairsBody"></div></div>`:''}
+  <button class="btn" onclick="doGenerate()">⚙️ ${newMode==='pairs'?'Generar torneo de parejas':'Generar fixture'}</button>`;
   renderChips();
+  if(newMode==='pairs')renderPairsSection();
 }
 function renderChips(){
   const roster=loadRoster(),chips=document.getElementById('chips');
@@ -457,41 +529,125 @@ function renderChips(){
 function toggleSel(id){
   const i=selectedIds.indexOf(id);
   if(i>=0)selectedIds.splice(i,1);
-  else{if(selectedIds.length>=12){toast('Máximo 12 jugadores');return;}selectedIds.push(id);}
+  else{if(selectedIds.length>=maxPlayers()){toast('Máximo '+maxPlayers()+' jugadores');return;}selectedIds.push(id);}
+  manualPairs=manualPairs.filter(pr=>selectedIds.includes(pr[0])&&selectedIds.includes(pr[1]));
+  if(manualPending&&!selectedIds.includes(manualPending))manualPending=null;
+  randomTeams=null;
   renderChips();
+  if(newMode==='pairs')renderPairsSection();
 }
 function updateSelUI(){
-  const n=selectedIds.length;
-  document.getElementById('selCount').innerHTML=`Seleccionados: <b>${n}</b>`+(n<4?' — faltan, mínimo 4':n>12?' — máximo 12':'');
-  if(n>=4&&n<=12){
-    document.getElementById('tPoints').value=defaultPoints(n);
-    document.getElementById('tRounds').value=defaultRounds(n);
-    const courts=Math.floor(n/4),sit=n-courts*4;
-    document.getElementById('hint').innerHTML=`Cada ronda: <b>${courts}</b> cancha(s), <b>${sit}</b> en descanso. `+
-      (n===9?'Todos descansan 1 vez y juegas con cada quien una vez. 👌':
-       n===8?'Nadie descansa y juegas con cada compañero una vez. 👌':'');
-  }else document.getElementById('hint').innerHTML='Toca los nombres para elegir entre 4 y 12 jugadores.';
+  const n=selectedIds.length, scEl=document.getElementById('selCount');
+  const pEl=document.getElementById('tPoints'),rEl=document.getElementById('tRounds'),hEl=document.getElementById('hint');
+  if(newMode==='pairs'){
+    if(scEl)scEl.innerHTML=`Seleccionados: <b>${n}</b>`+(n<4?' — mínimo 4':n%2!==0?' — debe ser par':'');
+    const teams=Math.floor(n/2),rounds=teams%2===0?teams-1:teams;
+    if(rEl)rEl.value=(n>=4&&n%2===0)?rounds:'';
+    if(hEl)hEl.innerHTML=(n>=4&&n%2===0)
+      ?`<b>${teams}</b> parejas · round-robin de <b>${rounds}</b> rondas (cada pareja juega contra todas).`
+      :'Elige un número <b>par</b> de jugadores (mínimo 4).';
+  }else{
+    if(scEl)scEl.innerHTML=`Seleccionados: <b>${n}</b>`+(n<4?' — mínimo 4':n>12?' — máximo 12':'');
+    if(n>=4&&n<=12){
+      if(pEl)pEl.value=defaultPoints(n);
+      if(rEl)rEl.value=defaultRounds(n);
+      const courts=Math.floor(n/4),sit=n-courts*4;
+      if(hEl)hEl.innerHTML=`Cada ronda: <b>${courts}</b> cancha(s), <b>${sit}</b> en descanso. `+
+        (n===9?'Todos descansan 1 vez. 👌':n===8?'Nadie descansa. 👌':'');
+    }else if(hEl)hEl.innerHTML='Toca los nombres para elegir entre 4 y 12 jugadores.';
+  }
 }
 function addNewPlayerToRoster(){
   const inp=document.getElementById('newPlayer'),nm=inp.value.trim();
   if(!nm)return;
   const p=addRosterPlayer(nm);inp.value='';inp.focus();
-  if(p&&!selectedIds.includes(p.id)&&selectedIds.length<12)selectedIds.push(p.id);
-  renderChips();
+  if(p&&!selectedIds.includes(p.id)&&selectedIds.length<maxPlayers())selectedIds.push(p.id);
+  randomTeams=null;renderChips();if(newMode==='pairs')renderPairsSection();
 }
+
+/* ---- Parejas: formación ---- */
+function idName(id){const p=loadRoster().find(x=>x.id===id);return p?p.name:'?';}
+function selectedChosen(){const roster=loadRoster();return selectedIds.map(id=>roster.find(p=>p.id===id)).filter(Boolean);}
+function setPairMethod(m){pairMethod=m;if(m==='random'&&!randomTeams)shuffleRandom();renderNew();}
+function pairsByRanking(){
+  const chosen=selectedChosen(),rk=computeRanking(),pos={};rk.forEach((s,i)=>pos[s.id]=i);
+  const mid=rk.length?rk.length/2-0.5:0;
+  const ordered=[...chosen].sort((a,b)=>((a.id in pos?pos[a.id]:mid)-(b.id in pos?pos[b.id]:mid)));
+  const teams=[],n=ordered.length;
+  for(let i=0;i<n/2;i++)teams.push([ordered[i].id,ordered[n-1-i].id]);
+  return teams;
+}
+function shuffleRandom(){
+  const ids=selectedChosen().map(c=>c.id);
+  shuffle(ids,mulberry32((Date.now()+Math.floor(Math.random()*1e6))>>>0));
+  randomTeams=[];for(let i=0;i+1<ids.length;i+=2)randomTeams.push([ids[i],ids[i+1]]);
+}
+function manualPick(id){
+  if(manualPending===null)manualPending=id;
+  else if(manualPending===id)manualPending=null;
+  else{manualPairs.push([manualPending,id]);manualPending=null;}
+  renderPairsSection();
+}
+function manualDissolve(i){manualPairs.splice(i,1);renderPairsSection();}
+function teamsPreviewHtml(teams){
+  return `<div class="card" style="background:var(--card2);margin:8px 0 0">`+teams.map((pr,i)=>
+    `<div style="padding:7px 0;${i<teams.length-1?'border-bottom:1px solid var(--line)':''}"><b>Equipo ${i+1}:</b> ${esc(idName(pr[0]))} & ${esc(idName(pr[1]))}</div>`).join('')+`</div>`;
+}
+function renderPairsSection(){
+  const body=document.getElementById('pairsBody');if(!body)return;
+  const n=selectedIds.length;
+  if(n<4||n%2!==0){body.innerHTML=`<p class="muted">Selecciona un número <b>par</b> de jugadores (mínimo 4) para formar parejas.</p>`;return;}
+  if(pairMethod==='ranking'){
+    body.innerHTML=`<p class="muted">Empareja al mejor rankeado con el de más abajo, para equipos parejos (los no rankeados van al medio).</p>`+teamsPreviewHtml(pairsByRanking());
+  }else if(pairMethod==='random'){
+    if(!randomTeams||randomTeams.flat().length!==n)shuffleRandom();
+    body.innerHTML=teamsPreviewHtml(randomTeams)+`<button class="btn secondary" onclick="shuffleRandom();renderPairsSection()">🔀 Barajear de nuevo</button>`;
+  }else{
+    let h='';
+    if(manualPairs.length)h+=`<p class="muted">Parejas formadas:</p>`+manualPairs.map((pr,i)=>
+      `<div class="titem" style="margin-bottom:6px"><span class="ic">👥</span><div class="meta"><div class="nm">${esc(idName(pr[0]))} & ${esc(idName(pr[1]))}</div></div><button class="chip-sel" style="margin:0" onclick="manualDissolve(${i})">✕</button></div>`).join('');
+    const paired=new Set(manualPairs.flat()),pool=selectedIds.filter(id=>!paired.has(id));
+    h+=`<p class="muted" style="margin-top:8px">Toca dos jugadores para emparejarlos:</p>`;
+    h+=pool.length?pool.map(id=>`<button type="button" class="chip-sel${manualPending===id?' on':''}" onclick="manualPick('${id}')">${esc(idName(id))}</button>`).join(''):`<p class="muted">✅ Todos emparejados.</p>`;
+    body.innerHTML=h;
+  }
+}
+
 function doGenerate(){
+  captureNewForm();
+  if(newMode==='pairs')return doGeneratePairs();
   const n=selectedIds.length;
   if(n<4||n>12){toast('Selecciona entre 4 y 12 jugadores');return;}
   const roster=loadRoster();
   const chosen=selectedIds.map(id=>roster.find(p=>p.id===id)).filter(Boolean);
   const players=chosen.map(p=>p.name),playerIds=chosen.map(p=>p.id);
-  const pts=+document.getElementById('tPoints').value||defaultPoints(n);
-  const rounds=+document.getElementById('tRounds').value||defaultRounds(n);
-  const name=document.getElementById('tName').value.trim()||'Americano';
+  const pts=+newPoints||defaultPoints(n),rounds=defaultRounds(n);
+  const name=(newName||'').trim()||'Americano';
   toast('Generando fixture balanceado…');
   setTimeout(()=>{
     const{schedule}=generateSchedule(n,rounds,{restarts:5000});
-    const t={id:'t'+Date.now(),name,createdAt:Date.now(),numPlayers:n,players,playerIds,pointsPerMatch:pts,numRounds:rounds,schedule};
+    const t={id:'t'+Date.now(),name,createdAt:Date.now(),mode:'americano',numPlayers:n,players,playerIds,pointsPerMatch:pts,numRounds:rounds,schedule};
+    saveTournament(t);openTournament(t.id);
+  },30);
+}
+function doGeneratePairs(){
+  const n=selectedIds.length;
+  if(n<4||n%2!==0){toast('Selecciona un número par de jugadores (mínimo 4)');return;}
+  let teamIds;
+  if(pairMethod==='ranking')teamIds=pairsByRanking();
+  else if(pairMethod==='random'){if(!randomTeams)shuffleRandom();teamIds=randomTeams;}
+  else{if(manualPairs.length!==n/2){toast('Faltan parejas por formar');return;}teamIds=manualPairs;}
+  const roster=loadRoster();
+  const orderedIds=teamIds.reduce((a,pr)=>a.concat(pr),[]);
+  const players=orderedIds.map(id=>{const p=roster.find(x=>x.id===id);return p?p.name:'?';});
+  const playerIds=orderedIds, idxOf={};playerIds.forEach((id,i)=>idxOf[id]=i);
+  const teams=teamIds.map(pr=>[idxOf[pr[0]],idxOf[pr[1]]]);
+  const pts=+newPoints||24,rounds=teams.length%2===0?teams.length-1:teams.length;
+  const name=(newName||'').trim()||'Parejas';
+  toast('Generando torneo…');
+  setTimeout(()=>{
+    const schedule=buildPairsSchedule(teams.map(pr=>pr.slice()));
+    const t={id:'t'+Date.now(),name,createdAt:Date.now(),mode:'pairs',numPlayers:n,players,playerIds,teams,pointsPerMatch:pts,numRounds:rounds,schedule};
     saveTournament(t);openTournament(t.id);
   },30);
 }
@@ -561,10 +717,12 @@ function computeStandings(t){
   st.sort((a,b)=>b.pts-a.pts||b.dif-a.dif||a.name.localeCompare(b.name));
   return st;
 }
+function tournamentStandings(){return current.mode==='pairs'?computeTeamStandings(current):computeStandings();}
 function renderTabla(){
-  const c=document.getElementById('tabContent');const st=computeStandings();
+  const c=document.getElementById('tabContent');const st=tournamentStandings();
+  const entLabel=current.mode==='pairs'?'Pareja':'Jugador';
   let h=`<div class="card" style="padding:0;overflow:hidden"><table class="tbl-compact"><thead><tr>
-    <th class="n">#</th><th>Jugador</th><th style="text-align:center">PJ</th>
+    <th class="n">#</th><th>${entLabel}</th><th style="text-align:center">PJ</th>
     <th style="text-align:center">G-P-E</th>
     <th style="text-align:right">Pts</th><th style="text-align:right">Dif</th></tr></thead><tbody>`;
   st.forEach((s,i)=>{
@@ -608,7 +766,7 @@ function share(text){
   else{window.open('https://wa.me/?text='+encodeURIComponent(text),'_blank');}
 }
 function shareStandings(){
-  const st=computeStandings();
+  const st=tournamentStandings();
   let t=`🎾 *${current.name}* — Posiciones\n\n`;
   st.forEach((s,i)=>{const m=i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}.`;
     t+=`${m} ${s.name} — *${s.pts}* pts · ${s.g}-${s.p}-${s.e} (${s.dif>=0?'+':''}${s.dif})\n`;});
@@ -667,10 +825,10 @@ async function shareBlob(blob,filename,title,text){
 function trimName(n){return n.length>16?n.slice(0,15)+'…':n;}
 async function shareStandingsImage(){
   toast('Generando imagen…');
-  const st=computeStandings();
+  const st=tournamentStandings();
   const columns=[
     {label:'#',x:46,align:'center',bold:true},
-    {label:'Jugador',x:80,align:'left'},
+    {label:current.mode==='pairs'?'Pareja':'Jugador',x:80,align:'left'},
     {label:'G-P-E',x:432,align:'center',size:22},
     {label:'Pts',x:620,align:'right',bold:true,color:'#c8ff3d'},
     {label:'Dif',x:736,align:'right',color:'#9aa3ad',size:22}
@@ -764,7 +922,7 @@ function renderRanking(){
 function playerDetailHtml(s){
   const r=[...s.results].sort((a,b)=>b.date-a.date);
   return `<div style="font-size:12px;color:var(--muted);padding:2px 0 8px">`+
-    r.map(x=>`${new Date(x.date).toLocaleDateString('es')} · ${esc(x.name)} — <b style="color:var(--txt)">${x.position}º</b> de ${x.np} · +${x.posPoints} pts`).join('<br>')+
+    r.map(x=>`${new Date(x.date).toLocaleDateString('es')} · ${x.pairs?'👥 ':''}${esc(x.name)} — <b style="color:var(--txt)">${x.position}º</b> de ${x.np}${x.pairs?' parejas':''} · +${x.posPoints} pts`).join('<br>')+
     `</div>`;
 }
 function togglePlayerDetail(id){const el=document.getElementById('det-'+id);if(el)el.style.display=el.style.display==='none'?'table-row':'none';}
