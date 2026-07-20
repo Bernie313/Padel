@@ -236,6 +236,11 @@ function migrate(){
       t.playerIds=t.players.map(nm=>{const p=addRosterPlayer(nm);return p?p.id:null;});
       changed=true;
     }
+    // parejas con formato viejo (lista anidada, no compatible con la nube) -> plano
+    if(t.mode==='pairs'&&t.teams&&!t.teamsFlat){
+      t.teamsFlat=t.teams.reduce((a,pr)=>a.concat(pr),[]);
+      delete t.teams;changed=true;
+    }
   });
   if(changed)saveAll(list);
 }
@@ -280,9 +285,15 @@ function buildPairsSchedule(teams){
     return {matches,resting:all.filter(p=>!playing.has(p))};
   });
 }
+// Firestore no permite listas dentro de listas, por eso las parejas se guardan
+// planas (teamsFlat) y se reconstruyen aquí. Compatible con torneos viejos (teams).
+function getTeams(t){
+  if(t.teamsFlat){const r=[];for(let i=0;i+1<t.teamsFlat.length;i+=2)r.push([t.teamsFlat[i],t.teamsFlat[i+1]]);return r;}
+  return t.teams||[];
+}
 function computeTeamStandings(t){
   const key=p=>p.slice().sort((a,b)=>a-b).join(',');
-  const teams=(t.teams||[]).map((pair,ti)=>({ti,pair,name:pair.map(pi=>t.players[pi]).join(' & '),pts:0,pf:0,pa:0,pj:0,g:0,p:0,e:0}));
+  const teams=getTeams(t).map((pair,ti)=>({ti,pair,name:pair.map(pi=>t.players[pi]).join(' & '),pts:0,pf:0,pa:0,pj:0,g:0,p:0,e:0}));
   const k2t={};teams.forEach(tm=>k2t[key(tm.pair)]=tm);
   t.schedule.forEach(rd=>rd.matches.forEach(m=>{
     if(m.scoreA==null)return;
@@ -301,7 +312,8 @@ function computeRanking(){
   roster.forEach(p=>stats[p.id]={id:p.id,name:p.name,pts:0,tournaments:0,titles:0,amer:0,bestPos:99,results:[]});
   loadAll().slice().reverse().forEach(t=>{ // del más viejo al más nuevo
     if(!isComplete(t)||!t.playerIds)return;
-    if(t.mode==='pairs'&&t.teams){
+    if(t.mode==='pairs'&&(t.teamsFlat||t.teams)){
+      const nTeams=getTeams(t).length;
       assignPositions(computeTeamStandings(t)).forEach(row=>{
         row.pair.forEach(pi=>{
           const id=t.playerIds[pi];if(!id||!stats[id])return;
@@ -309,7 +321,7 @@ function computeRanking(){
           s.pts+=row.posPoints;s.amer+=row.pts;s.tournaments++;
           if(row.position===1)s.titles++;
           if(row.position<s.bestPos)s.bestPos=row.position;
-          s.results.push({name:t.name,date:t.createdAt,position:row.position,posPoints:row.posPoints,amer:row.pts,np:t.teams.length,pairs:true});
+          s.results.push({name:t.name,date:t.createdAt,position:row.position,posPoints:row.posPoints,amer:row.pts,np:nTeams,pairs:true});
         });
       });
       return;
@@ -351,9 +363,9 @@ function cloudInit(){
   }catch(e){console.warn('Firebase init falló',e);return false;}
 }
 function groupRef(){return db.collection('groups').doc(groupCode());}
-function cloudPushTournament(t){if(cloudOn&&db)groupRef().collection('tournaments').doc(t.id).set(t).catch(e=>console.warn(e));}
-function cloudDeleteTournament(id){if(cloudOn&&db)groupRef().collection('tournaments').doc(id).delete().catch(e=>console.warn(e));}
-function cloudPushRoster(){if(cloudOn&&db)groupRef().collection('meta').doc('roster').set({list:loadRoster()}).catch(e=>console.warn(e));}
+function cloudPushTournament(t){if(cloudOn&&db)try{groupRef().collection('tournaments').doc(t.id).set(t).catch(e=>console.warn(e));}catch(e){console.warn(e);}}
+function cloudDeleteTournament(id){if(cloudOn&&db)try{groupRef().collection('tournaments').doc(id).delete().catch(e=>console.warn(e));}catch(e){console.warn(e);}}
+function cloudPushRoster(){if(cloudOn&&db)try{groupRef().collection('meta').doc('roster').set({list:loadRoster()}).catch(e=>console.warn(e));}catch(e){console.warn(e);}}
 function cloudRefresh(){
   if(document.activeElement&&document.activeElement.tagName==='INPUT')return; // no interrumpir si está escribiendo
   if(screen==='home')renderHome();
@@ -647,7 +659,8 @@ function doGeneratePairs(){
   toast('Generando torneo…');
   setTimeout(()=>{
     const schedule=buildPairsSchedule(teams.map(pr=>pr.slice()));
-    const t={id:'t'+Date.now(),name,createdAt:Date.now(),mode:'pairs',numPlayers:n,players,playerIds,teams,pointsPerMatch:pts,numRounds:rounds,schedule};
+    const teamsFlat=teams.reduce((a,pr)=>a.concat(pr),[]); // plano para Firestore
+    const t={id:'t'+Date.now(),name,createdAt:Date.now(),mode:'pairs',numPlayers:n,players,playerIds,teamsFlat,pointsPerMatch:pts,numRounds:rounds,schedule};
     saveTournament(t);openTournament(t.id);
   },30);
 }
@@ -720,11 +733,14 @@ function computeStandings(t){
 function tournamentStandings(){return current.mode==='pairs'?computeTeamStandings(current):computeStandings();}
 function renderTabla(){
   const c=document.getElementById('tabContent');const st=tournamentStandings();
+  const ranked=assignPositions(st); // posición + puntos de ranking (maneja empates)
   const entLabel=current.mode==='pairs'?'Pareja':'Jugador';
-  let h=`<div class="card" style="padding:0;overflow:hidden"><table class="tbl-compact"><thead><tr>
+  const complete=isComplete(current);
+  let h=`<div class="card" style="padding:0;overflow-x:auto"><table class="tbl-compact"><thead><tr>
     <th class="n">#</th><th>${entLabel}</th><th style="text-align:center">PJ</th>
     <th style="text-align:center">G-P-E</th>
-    <th style="text-align:right">Pts</th><th style="text-align:right">Dif</th></tr></thead><tbody>`;
+    <th style="text-align:right">Pts</th><th style="text-align:right">Dif</th>
+    <th style="text-align:right">🏅</th></tr></thead><tbody>`;
   st.forEach((s,i)=>{
     const cls=i===0?'top1':i===1?'top2':i===2?'top3':'';
     const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1);
@@ -732,10 +748,13 @@ function renderTabla(){
       <td style="text-align:center">${s.pj}</td>
       <td style="text-align:center;font-size:12px">${s.g}-${s.p}-${s.e}</td>
       <td class="pts">${s.pts}</td>
-      <td class="dif">${s.dif>=0?'+':''}${s.dif}</td></tr>`;
+      <td class="dif">${s.dif>=0?'+':''}${s.dif}</td>
+      <td style="text-align:right;color:var(--gold);font-weight:700">+${ranked[i].posPoints}</td></tr>`;
   });
   h+=`</tbody></table></div>
-    <p class="muted center">G-P-E = Ganados-Perdidos-Empatados · desempate por diferencia de puntos.</p>
+    <p class="muted center">G-P-E = Ganados-Perdidos-Empatados · Dif = diferencia de puntos.<br>
+    🏅 = puntos que suma al ranking según la posición${current.mode==='pairs'?' (cada jugador de la pareja)':''}.
+    ${complete?'':'<br>⏳ Se otorgan al completar todos los partidos.'}</p>
     <button class="btn wa" onclick="shareStandingsImage()">📷 Compartir imagen por WhatsApp</button>
     <button class="btn secondary" onclick="shareStandings()">📝 Compartir como texto</button>
     ${current.closed
