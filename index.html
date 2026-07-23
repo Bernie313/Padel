@@ -102,6 +102,10 @@
   tr.top3 td.n{color:#d8a26a}
 
   .players-grid input{margin-bottom:8px}
+  .round-h.live .num{background:var(--accent); color:#0f1115}
+  .round-h.live .ttl{color:var(--accent)}
+  .live-badge{background:var(--accent); color:#0f1115; font-size:10px; font-weight:800; letter-spacing:.5px; padding:3px 9px; border-radius:20px; white-space:nowrap}
+  .match.live{border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset}
   .chip-sel{display:inline-block; background:var(--card2); border:1px solid var(--line); color:var(--txt); border-radius:20px; padding:9px 14px; font-size:14px; margin:0 6px 8px 0; cursor:pointer}
   .chip-sel.on{background:var(--green); border-color:var(--green-l); color:#fff; font-weight:700}
   .toast{position:fixed; left:50%; bottom:30px; transform:translateX(-50%); background:var(--card2); border:1px solid var(--line); color:var(--txt); padding:12px 20px; border-radius:30px; font-size:14px; z-index:50; box-shadow:0 6px 20px rgba(0,0,0,.5); opacity:0; transition:.3s; pointer-events:none}
@@ -203,8 +207,57 @@ function defaultPoints(n){return n===9?20:24;}
 const KEY='padel_americano_torneos';
 function loadAll(){try{return JSON.parse(localStorage.getItem(KEY))||[];}catch(e){return[];}}
 function saveAll(list){localStorage.setItem(KEY,JSON.stringify(list));}
-function saveTournament(t){const list=loadAll();const i=list.findIndex(x=>x.id===t.id);if(i>=0)list[i]=t;else list.unshift(t);saveAll(list);cloudPushTournament(t);}
-function deleteTournament(id){saveAll(loadAll().filter(t=>t.id!==id));cloudDeleteTournament(id);}
+function saveTournamentLocal(t){const list=loadAll();const i=list.findIndex(x=>x.id===t.id);if(i>=0)list[i]=t;else list.unshift(t);saveAll(list);}
+// Sube el torneo COMPLETO: solo al crearlo. Nunca al cargar resultados
+// (si no, dos teléfonos se pisan el fixture y los marcadores del otro).
+function saveTournament(t){saveTournamentLocal(t);cloudPushTournament(t);}
+
+/* Marcadores: se guardan en un mapa aparte ("0_1" = ronda 0, partido 1) para
+   poder subirlos uno por uno sin tocar el resto del torneo. */
+function scoreKey(ri,mi){return ri+'_'+mi;}
+function applyScores(t){
+  if(!t||!t.schedule)return t;
+  const sc=t.scores||{};
+  t.schedule.forEach((rd,ri)=>rd.matches.forEach((m,mi)=>{
+    const v=sc[scoreKey(ri,mi)];
+    if(v){m.scoreA=(typeof v.a==='number')?v.a:null;m.scoreB=(typeof v.b==='number')?v.b:null;}
+  }));
+  return t;
+}
+function scoresFromSchedule(t){
+  const sc={};
+  (t.schedule||[]).forEach((rd,ri)=>rd.matches.forEach((m,mi)=>{
+    if(m.scoreA!=null)sc[scoreKey(ri,mi)]={a:m.scoreA,b:m.scoreB};
+  }));
+  return sc;
+}
+/* Papelera: borrar NO elimina, marca el torneo. Se puede recuperar 30 días. */
+const TRASH_DAYS=30;
+function loadActive(){return loadAll().filter(t=>!t.deleted);}
+function loadTrash(){return loadAll().filter(t=>t.deleted).sort((a,b)=>b.deleted-a.deleted);}
+function deleteTournament(id){
+  const list=loadAll(),t=list.find(x=>x.id===id);
+  if(!t)return;
+  t.deleted=Date.now();saveAll(list);
+  cloudPushMerge(id,{deleted:t.deleted});
+  logEvent('torneo:papelera',id+' '+t.name);
+}
+function restoreTournament(id){
+  const list=loadAll(),t=list.find(x=>x.id===id);
+  if(!t)return;
+  delete t.deleted;saveAll(list);
+  cloudPushMerge(id,{deleted:null});
+  logEvent('torneo:restaurado',id+' '+t.name);
+}
+function purgeTournament(id){
+  saveAll(loadAll().filter(t=>t.id!==id));
+  cloudDeleteTournament(id);
+  logEvent('torneo:eliminado-definitivo',id);
+}
+function purgeOldTrash(){
+  const cutoff=Date.now()-TRASH_DAYS*86400000;
+  loadAll().filter(t=>t.deleted&&t.deleted<cutoff).forEach(t=>purgeTournament(t.id));
+}
 
 /* ============ ALMACENAMIENTO: JUGADORES (roster) ============ */
 const ROSTER_KEY='padel_americano_jugadores';
@@ -223,10 +276,10 @@ function renameRosterPlayer(id,nm){
   const list=loadAll();const changedT=[];
   list.forEach(t=>{let ch=false;if(t.playerIds)t.playerIds.forEach((pid,idx)=>{if(pid===id&&t.players[idx]!==nm){t.players[idx]=nm;ch=true;}});if(ch)changedT.push(t);});
   if(changedT.length)saveAll(list);
-  cloudPushRoster();changedT.forEach(t=>cloudPushTournament(t));
+  cloudPushRoster();changedT.forEach(t=>cloudPushMerge(t.id,{players:t.players}));
 }
 function deleteRosterPlayer(id){saveRoster(loadRoster().filter(p=>p.id!==id));cloudPushRoster();}
-function playerUsed(id){return loadAll().some(t=>(t.playerIds||[]).includes(id));}
+function playerUsed(id){return loadActive().some(t=>(t.playerIds||[]).includes(id));}
 
 /* Migración: torneos viejos (solo nombres) se vinculan a jugadores del roster */
 function migrate(){
@@ -241,6 +294,8 @@ function migrate(){
       t.teamsFlat=t.teams.reduce((a,pr)=>a.concat(pr),[]);
       delete t.teams;changed=true;
     }
+    // marcadores del formato viejo (dentro del fixture) -> mapa aparte
+    if(!t.scores){t.scores=scoresFromSchedule(t);changed=true;}
   });
   if(changed)saveAll(list);
 }
@@ -310,7 +365,7 @@ function computeTeamStandings(t){
 function computeRanking(){
   const roster=loadRoster(),stats={};
   roster.forEach(p=>stats[p.id]={id:p.id,name:p.name,pts:0,tournaments:0,titles:0,amer:0,bestPos:99,results:[]});
-  loadAll().slice().reverse().forEach(t=>{ // del más viejo al más nuevo
+  loadActive().slice().reverse().forEach(t=>{ // del más viejo al más nuevo
     if(!isComplete(t)||!t.playerIds)return;
     if(t.mode==='pairs'&&(t.teamsFlat||t.teams)){
       const nTeams=getTeams(t).length;
@@ -364,13 +419,49 @@ function cloudInit(){
 }
 function groupRef(){return db.collection('groups').doc(groupCode());}
 function cloudPushTournament(t){if(cloudOn&&db)try{groupRef().collection('tournaments').doc(t.id).set(t).catch(e=>console.warn(e));}catch(e){console.warn(e);}}
+// Escritura quirúrgica: fusiona SOLO los campos indicados, sin pisar el resto
+// del documento. Es lo que evita que dos teléfonos se borren el trabajo.
+function cloudPushMerge(tid,obj){
+  if(cloudOn&&db)try{groupRef().collection('tournaments').doc(tid).set(obj,{merge:true}).catch(e=>console.warn(e));}catch(e){console.warn(e);}
+}
+function cloudPushScore(tid,ri,mi,a,b){
+  const o={};o[scoreKey(ri,mi)]={a:(a==null?null:a),b:(b==null?null:b)};
+  cloudPushMerge(tid,{scores:o});
+}
 function cloudDeleteTournament(id){if(cloudOn&&db)try{groupRef().collection('tournaments').doc(id).delete().catch(e=>console.warn(e));}catch(e){console.warn(e);}}
 function cloudPushRoster(){if(cloudOn&&db)try{groupRef().collection('meta').doc('roster').set({list:loadRoster()}).catch(e=>console.warn(e));}catch(e){console.warn(e);}}
+/* ============ LOG DE DIAGNÓSTICO ============ */
+const LOG_KEY='padel_log', DEVICE_KEY='padel_device';
+function deviceId(){
+  let d=localStorage.getItem(DEVICE_KEY);
+  if(!d){d=(navigator.userAgent||'').includes('Android')?'Android-':'Disp-';d+=Math.random().toString(36).slice(2,6).toUpperCase();localStorage.setItem(DEVICE_KEY,d);}
+  return d;
+}
+function logEvent(type,detail){
+  try{
+    const log=JSON.parse(localStorage.getItem(LOG_KEY)||'[]');
+    log.push({t:Date.now(),dev:deviceId(),type,detail:detail||''});
+    while(log.length>300)log.shift(); // solo los últimos 300 eventos
+    localStorage.setItem(LOG_KEY,JSON.stringify(log));
+    if(cloudOn&&db)try{
+      groupRef().collection('logs').doc(deviceId()).set({
+        device:deviceId(),updated:Date.now(),
+        events:log.slice(-120).map(e=>e.t+'|'+e.type+'|'+e.detail)
+      },{merge:true}).catch(()=>{});
+    }catch(e){}
+  }catch(e){}
+}
+function loadLog(){try{return JSON.parse(localStorage.getItem(LOG_KEY)||'[]');}catch(e){return[];}}
+function clearLog(){localStorage.removeItem(LOG_KEY);}
+
 function cloudRefresh(){
+  // Mantener 'current' al día aunque no re-dibujemos (evita guardar sobre datos viejos)
+  if(screen==='tournament'&&current){const t0=loadAll().find(x=>x.id===current.id);if(t0)current=t0;}
   if(document.activeElement&&document.activeElement.tagName==='INPUT')return; // no interrumpir si está escribiendo
   if(screen==='home')renderHome();
   else if(screen==='ranking')renderRanking();
   else if(screen==='roster')renderRoster();
+  else if(screen==='trash')renderTrash();
   else if(screen==='sync')renderSync();
   else if(screen==='tournament'&&current){const t=loadAll().find(x=>x.id===current.id);if(t){current=t;renderTournament();}}
 }
@@ -383,12 +474,17 @@ function cloudListen(){
   cloudUnsub.push(g.collection('tournaments').onSnapshot(s=>{
     const list=loadAll();let changed=false;
     s.docChanges().forEach(ch=>{
-      const t=ch.doc.data(),i=list.findIndex(x=>x.id===t.id);
-      if(ch.type==='removed'){if(i>=0){list.splice(i,1);changed=true;}}
-      else{if(i>=0)list[i]=t;else list.push(t);changed=true;}
+      const t=applyScores(ch.doc.data()),i=list.findIndex(x=>x.id===t.id);
+      const mine=ch.doc.metadata&&ch.doc.metadata.hasPendingWrites;
+      if(ch.type==='removed'){if(i>=0){list.splice(i,1);changed=true;logEvent('nube:borrado',t.id);}}
+      else{
+        if(!mine&&ch.type==='modified')logEvent('nube:recibido',t.id+' marcadores='+Object.keys(t.scores||{}).length);
+        if(i>=0)list[i]=t;else list.push(t);
+        changed=true;
+      }
     });
     if(changed){list.sort((a,b)=>b.createdAt-a.createdAt);saveAll(list);cloudRefresh();}
-  },e=>console.warn(e)));
+  },e=>{console.warn(e);logEvent('nube:error',String(e&&e.message||e));}));
 }
 function cloudConnect(){ // al arrancar: solo escuchar (la nube manda)
   if(!groupCode()||!cloudInit()){cloudOn=false;return;}
@@ -411,7 +507,12 @@ async function cloudJoin(code){ // al conectarse desde el menú: fusiona lo loca
     localT.forEach(t=>{if(t.playerIds)t.playerIds=t.playerIds.map(id=>idMap[id]||id);});
     saveRoster(merged);saveAll(localT);
     await g.collection('meta').doc('roster').set({list:merged});
-    for(const t of localT){await g.collection('tournaments').doc(t.id).set(t);}
+    // Solo subir torneos que NO existan ya en la nube: la nube manda siempre.
+    for(const t of localT){
+      const ref=g.collection('tournaments').doc(t.id);
+      const snap=await ref.get();
+      if(!snap.exists)await ref.set(t);
+    }
   }catch(e){console.warn('join merge',e);}
   cloudListen();return true;
 }
@@ -454,7 +555,7 @@ function goHome(){current=null;backBtn.style.display='none';titleEl.textContent=
 /* ============ VISTA: INICIO ============ */
 function renderHome(){
   screen='home';
-  const list=loadAll();
+  const list=loadActive(),trash=loadTrash();
   let html=`<button class="btn" onclick="renderNew()">➕ Nuevo torneo</button>`;
   if(list.length||loadRoster().length){
     html+=`<div class="row" style="margin-top:10px">
@@ -462,6 +563,7 @@ function renderHome(){
       <button class="btn secondary" onclick="renderRoster()">👥 Jugadores</button></div>`;
   }
   html+=`<button class="btn secondary" onclick="renderSync()" style="margin-top:10px">☁️ ${cloudOn?'Sincronizado · '+esc(groupCode()):'Sincronizar entre teléfonos'}</button>`;
+  if(trash.length)html+=`<button class="btn secondary" onclick="renderTrash()" style="margin-top:10px">🗑️ Papelera (${trash.length})</button>`;
   if(list.length===0){
     html+=`<div class="empty"><div class="big">🎾</div><div>Todavía no tienes torneos.</div><div class="muted">Crea el primero arriba.</div></div>`;
   }else{
@@ -486,8 +588,11 @@ let manualPairs=[], manualPending=null, randomTeams=null;
 let newName='', newPoints=null;
 function maxPlayers(){return newMode==='pairs'?16:12;}
 function captureNewForm(){
-  const nEl=document.getElementById('tName');if(nEl)newName=nEl.value;
-  const pEl=document.getElementById('tPoints');if(pEl)newPoints=pEl.value;
+  const nEl=document.getElementById('tName');if(nEl&&nEl.value)newName=nEl.value;
+  // Solo pisar los puntos si el campo tiene un número válido (si está vacío,
+  // conservamos el valor ya elegido en vez de caer al valor por defecto).
+  const pEl=document.getElementById('tPoints');
+  if(pEl&&pEl.value!==''&&!isNaN(+pEl.value)&&+pEl.value>0)newPoints=+pEl.value;
 }
 function setMode(m){captureNewForm();newMode=m;newName='';manualPairs=[];manualPending=null;randomTeams=null;renderNew();}
 function renderNew(){
@@ -638,8 +743,8 @@ function doGenerate(){
   toast('Generando fixture balanceado…');
   setTimeout(()=>{
     const{schedule}=generateSchedule(n,rounds,{restarts:5000});
-    const t={id:'t'+Date.now(),name,createdAt:Date.now(),mode:'americano',numPlayers:n,players,playerIds,pointsPerMatch:pts,numRounds:rounds,schedule};
-    saveTournament(t);openTournament(t.id);
+    const t={id:'t'+Date.now(),name,createdAt:Date.now(),mode:'americano',numPlayers:n,players,playerIds,pointsPerMatch:pts,numRounds:rounds,schedule,scores:{}};
+    saveTournament(t);logEvent('torneo:creado','americano '+n+'j '+rounds+'r '+pts+'pts');openTournament(t.id);
   },30);
 }
 function doGeneratePairs(){
@@ -660,8 +765,8 @@ function doGeneratePairs(){
   setTimeout(()=>{
     const schedule=buildPairsSchedule(teams.map(pr=>pr.slice()));
     const teamsFlat=teams.reduce((a,pr)=>a.concat(pr),[]); // plano para Firestore
-    const t={id:'t'+Date.now(),name,createdAt:Date.now(),mode:'pairs',numPlayers:n,players,playerIds,teamsFlat,pointsPerMatch:pts,numRounds:rounds,schedule};
-    saveTournament(t);openTournament(t.id);
+    const t={id:'t'+Date.now(),name,createdAt:Date.now(),mode:'pairs',numPlayers:n,players,playerIds,teamsFlat,pointsPerMatch:pts,numRounds:rounds,schedule,scores:{}};
+    saveTournament(t);logEvent('torneo:creado','parejas '+n+'j '+teams.length+'eq '+rounds+'r '+pts+'pts');openTournament(t.id);
   },30);
 }
 
@@ -688,16 +793,31 @@ function scoreCell(m,ri,mi,team){
   if(current.closed)return `<span class="scval">${v??'–'}</span>`;
   return `<input type="number" inputmode="numeric" value="${v??''}" placeholder="–" onchange="setScore(${ri},${mi},'${team}',this.value)"/>`;
 }
+// La ronda en curso es la primera que tenga algún partido sin resultado.
+function currentRoundIndex(t){
+  t=t||current;
+  for(let i=0;i<t.schedule.length;i++)if(t.schedule[i].matches.some(m=>m.scoreA==null))return i;
+  return -1; // todas completas
+}
+let onlyLive=false;
+function toggleOnlyLive(){onlyLive=!onlyLive;renderRondas();}
 function renderRondas(){
   const c=document.getElementById('tabContent');let h='';
+  const live=currentRoundIndex();
   if(current.closed)h+=`<div class="lockbar">🔒 Torneo cerrado — los resultados no se pueden modificar</div>`;
+  if(live<0)h+=`<div class="lockbar" style="border-color:var(--green-l);color:var(--accent)">✅ Todos los partidos cargados</div>`;
+  else h+=`<button class="btn secondary" style="margin-top:0;margin-bottom:12px" onclick="toggleOnlyLive()">${onlyLive?'📋 Ver todas las rondas':'👁️ Ver solo la ronda en curso'}</button>`;
   current.schedule.forEach((rd,ri)=>{
+    if(onlyLive&&live>=0&&ri!==live)return;
+    const isLive=(ri===live), done=rd.matches.every(m=>m.scoreA!=null);
     const restNames=rd.resting.map(pname).join(', ');
-    h+=`<div class="round-h"><span class="num">${ri+1}</span><span class="ttl">Ronda ${ri+1}</span>
-      ${rd.resting.length?`<span class="rest">😴 Descansa: ${esc(restNames)}</span>`:''}</div>`;
+    h+=`<div class="round-h${isLive?' live':''}"><span class="num">${ri+1}</span>
+      <span class="ttl">Ronda ${ri+1}${done?' ✅':''}</span>
+      ${isLive?'<span class="live-badge">EN CURSO</span>':''}
+      ${rd.resting.length?`<span class="rest">😴 ${esc(restNames)}</span>`:''}</div>`;
     rd.matches.forEach((m,mi)=>{
       const aWin=m.scoreA!=null&&m.scoreA>m.scoreB, bWin=m.scoreB!=null&&m.scoreB>m.scoreA;
-      h+=`<div class="match"><div class="court">🏟️ Cancha ${mi+1}</div>
+      h+=`<div class="match${isLive?' live':''}"><div class="court">🏟️ Cancha ${mi+1}</div>
         <div class="team ${aWin?'win':''}"><span class="names">${esc(pname(m.teamA[0]))} & ${esc(pname(m.teamA[1]))}</span>
           <span class="sc">${scoreCell(m,ri,mi,'A')}</span></div>
         <div class="vs">VS · suma ${current.pointsPerMatch}</div>
@@ -714,7 +834,12 @@ function setScore(ri,mi,team,val){
   if(val===''){m.scoreA=null;m.scoreB=null;}
   else{let v=Math.max(0,Math.min(total,parseInt(val)||0));
     if(team==='A'){m.scoreA=v;m.scoreB=total-v;}else{m.scoreB=v;m.scoreA=total-v;}}
-  saveTournament(current);renderRondas();
+  if(!current.scores)current.scores={};
+  current.scores[scoreKey(ri,mi)]={a:m.scoreA,b:m.scoreB};
+  saveTournamentLocal(current);                          // local: torneo completo
+  cloudPushScore(current.id,ri,mi,m.scoreA,m.scoreB);    // nube: SOLO este marcador
+  logEvent('marcador','R'+(ri+1)+'P'+(mi+1)+' '+(m.scoreA==null?'borrado':m.scoreA+'-'+m.scoreB));
+  renderRondas();
 }
 
 function computeStandings(t){
@@ -765,18 +890,60 @@ function renderTabla(){
 }
 function closeTournament(){
   modalConfirm('¿Cerrar el torneo?\nLos resultados quedarán bloqueados y nadie del grupo podrá modificarlos.',()=>{
-    current.closed=true;saveTournament(current);renderTournament();toast('Torneo cerrado 🔒');
+    current.closed=true;saveTournamentLocal(current);cloudPushMerge(current.id,{closed:true});
+    logEvent('torneo:cerrado',current.id);renderTournament();toast('Torneo cerrado 🔒');
   });
 }
 function reopenTournament(){
   modalConfirm('¿Reabrir el torneo para poder editar los resultados?',()=>{
-    current.closed=false;saveTournament(current);renderTournament();toast('Torneo reabierto 🔓');
+    current.closed=false;saveTournamentLocal(current);cloudPushMerge(current.id,{closed:false});
+    logEvent('torneo:reabierto',current.id);renderTournament();toast('Torneo reabierto 🔓');
   });
 }
-function confirmDelete(){modalConfirm('¿Eliminar este torneo? No se puede deshacer.',()=>{deleteTournament(current.id);goHome();});}
+function confirmDelete(){
+  modalConfirm('¿Enviar este torneo a la papelera?\nPodrás recuperarlo durante '+TRASH_DAYS+' días.',()=>{
+    deleteTournament(current.id);goHome();toast('Enviado a la papelera 🗑️');
+  });
+}
 function deleteTournamentConfirm(id){
   const t=loadAll().find(x=>x.id===id);
-  modalConfirm('¿Eliminar el torneo "'+(t?t.name:'')+'"?\nNo se puede deshacer.',()=>{deleteTournament(id);renderHome();});
+  modalConfirm('¿Enviar "'+(t?t.name:'')+'" a la papelera?\nPodrás recuperarlo durante '+TRASH_DAYS+' días.',()=>{
+    deleteTournament(id);renderHome();toast('Enviado a la papelera 🗑️');
+  });
+}
+
+/* ============ VISTA: PAPELERA ============ */
+function renderTrash(){
+  screen='trash';current=null;backBtn.style.display='block';titleEl.textContent='Papelera';
+  const trash=loadTrash();
+  let h=`<p class="muted center">Los torneos se eliminan definitivamente ${TRASH_DAYS} días después de borrarlos.</p>`;
+  if(!trash.length)h+=`<div class="empty"><div class="big">🗑️</div><div>La papelera está vacía.</div></div>`;
+  else{
+    h+=`<div class="card tlist">`;
+    trash.forEach((t,i)=>{
+      const dias=Math.max(0,TRASH_DAYS-Math.floor((Date.now()-t.deleted)/86400000));
+      h+=`<div class="titem" ${i<trash.length-1?'style="border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:12px"':''}>
+        <span class="ic">🗑️</span>
+        <div class="meta"><div class="nm">${esc(t.name)}</div>
+        <div class="sub">${t.mode==='pairs'?'👥 Parejas':'🎾 Americano'} · ${t.numPlayers} jug. · quedan ${dias} día(s)</div></div>
+        <button class="chip-sel" style="margin:0" onclick="restoreConfirm('${t.id}')">↩️</button>
+        <button class="chip-sel" style="margin:0" onclick="purgeConfirm('${t.id}')">✖️</button></div>`;
+    });
+    h+=`</div><p class="muted center">↩️ recuperar · ✖️ eliminar definitivamente</p>`;
+  }
+  app.innerHTML=h;
+}
+function restoreConfirm(id){
+  const t=loadAll().find(x=>x.id===id);
+  modalConfirm('¿Recuperar "'+(t?t.name:'')+'"?\nVolverá a la lista y al ranking.',()=>{
+    restoreTournament(id);renderTrash();toast('Torneo recuperado ↩️');
+  });
+}
+function purgeConfirm(id){
+  const t=loadAll().find(x=>x.id===id);
+  modalConfirm('¿Eliminar "'+(t?t.name:'')+'" DEFINITIVAMENTE?\nEsto sí borra el torneo para todo el grupo y no se puede deshacer.',()=>{
+    purgeTournament(id);renderTrash();toast('Eliminado definitivamente');
+  });
 }
 
 /* ============ COMPARTIR ============ */
@@ -910,7 +1077,7 @@ function shareFixture(){
 function renderRanking(){
   screen='ranking';current=null;backBtn.style.display='block';titleEl.textContent='Ranking';
   const rk=computeRanking();
-  const incompletos=loadAll().filter(t=>t.playerIds&&!isComplete(t)).length;
+  const incompletos=loadActive().filter(t=>t.playerIds&&!isComplete(t)).length;
   let h='';
   if(!rk.length){
     h=`<div class="empty"><div class="big">🏅</div><div>Aún no hay torneos terminados.</div>
@@ -1010,6 +1177,7 @@ function renderSync(){
       <p style="font-size:24px;font-weight:800;letter-spacing:2px;color:var(--accent)">${esc(code)}</p>
       <p class="muted">Todos los que usen este mismo código comparten los torneos y el ranking, en tiempo real.</p>
       <button class="btn wa" onclick="shareGroupCode()">📤 Invitar al grupo</button>
+      <button class="btn secondary" onclick="renderLog()">📋 Registro de diagnóstico</button>
       <button class="btn danger" onclick="doDisconnect()">Desconectar este teléfono</button>
     </div>`;
   }else{
@@ -1036,9 +1204,40 @@ function shareGroupCode(){
   share(`🎾 Únete a nuestro grupo de Pádel Americano:\n\n1) Abre: ${location.origin}${location.pathname}\n2) Entra a ☁️ Sincronizar\n3) Escribe el código: *${groupCode()}*`);
 }
 
+/* ============ VISTA: LOG DE DIAGNÓSTICO ============ */
+function renderLog(){
+  screen='log';current=null;backBtn.style.display='block';titleEl.textContent='Diagnóstico';
+  const log=loadLog().slice().reverse();
+  let h=`<div class="card">
+    <p class="muted">Este teléfono: <b>${esc(deviceId())}</b>${cloudOn?' · grupo '+esc(groupCode()):' · sin nube'}</p>
+    <p class="muted">Registro de los últimos eventos. Si algo falla, compártelo para revisarlo.</p>
+    <button class="btn wa" onclick="shareLog()">📤 Compartir registro</button>
+    <button class="btn danger" onclick="doClearLog()">🗑️ Borrar registro</button>
+  </div>`;
+  if(!log.length)h+=`<div class="empty"><div class="big">📋</div><div>Sin eventos todavía.</div></div>`;
+  else{
+    h+=`<div class="card" style="font-size:12px;line-height:1.7">`+log.map(e=>{
+      const d=new Date(e.t),hh=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
+      return `<div style="border-bottom:1px solid var(--line);padding:3px 0">
+        <span class="muted">${hh}</span> <b>${esc(e.type)}</b> <span class="muted">${esc(e.detail)}</span></div>`;
+    }).join('')+`</div>`;
+  }
+  app.innerHTML=h;
+}
+function shareLog(){
+  const log=loadLog().slice(-80);
+  let t=`📋 Registro Americano Pádel\nDispositivo: ${deviceId()}\nGrupo: ${groupCode()||'sin nube'}\n\n`;
+  log.forEach(e=>{const d=new Date(e.t);
+    t+=`${d.toLocaleDateString('es')} ${d.toLocaleTimeString('es')} · ${e.type} · ${e.detail}\n`;});
+  share(t);
+}
+function doClearLog(){modalConfirm('¿Borrar el registro de diagnóstico?',()=>{clearLog();renderLog();});}
+
 /* ============ ARRANQUE ============ */
 migrate();
 cloudConnect();
+purgeOldTrash();
+logEvent('app:abierta','v10');
 goHome();
 if('serviceWorker'in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
