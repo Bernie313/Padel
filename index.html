@@ -102,6 +102,8 @@
   tr.top3 td.n{color:#d8a26a}
 
   .players-grid input{margin-bottom:8px}
+  .ptsbar{display:flex; align-items:center; gap:6px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:11px 14px; margin-bottom:12px; font-size:14px}
+  .ptsbar b{color:var(--accent); font-size:17px; margin-left:4px}
   .round-h.live .num{background:var(--accent); color:#0f1115}
   .round-h.live .ttl{color:var(--accent)}
   .live-badge{background:var(--accent); color:#0f1115; font-size:10px; font-weight:800; letter-spacing:.5px; padding:3px 9px; border-radius:20px; white-space:nowrap}
@@ -303,13 +305,14 @@ function migrate(){
 /* ============ RANKING (estilo FIP, por posición) ============ */
 const POS_POINTS=[100,85,72,60,50,42,35,28,22,17,13,10]; // 1º..12º
 function posPoints(pos){return pos>=1&&pos<=POS_POINTS.length?POS_POINTS[pos-1]:5;}
-function isComplete(t){return t.schedule.length>0 && t.schedule.every(rd=>rd.matches.every(m=>m.scoreA!=null));}
+function isComplete(t){return t.schedule.length>0 && t.schedule.every(rd=>rd.matches.every(m=>m.scoreA!=null&&m.scoreB!=null));}
 // Asigna posición y puntos a una tabla ya ordenada; empates exactos comparten posición y promedian puntos
 function assignPositions(st){
+  const rv=s=>(s.rankVal!=null?s.rankVal:s.pts); // valor principal de orden (puntos o sets ganados)
   const out=[];let i=0;
   while(i<st.length){
     let j=i;
-    while(j+1<st.length && st[j+1].pts===st[i].pts && st[j+1].dif===st[i].dif)j++;
+    while(j+1<st.length && rv(st[j+1])===rv(st[i]) && st[j+1].dif===st[i].dif)j++;
     let sum=0;for(let k=i;k<=j;k++)sum+=posPoints(k+1);
     const avg=Math.round(sum/(j-i+1)*10)/10, position=i+1;
     for(let k=i;k<=j;k++)out.push({...st[k],position,posPoints:avg});
@@ -350,15 +353,16 @@ function computeTeamStandings(t){
   const key=p=>p.slice().sort((a,b)=>a-b).join(',');
   const teams=getTeams(t).map((pair,ti)=>({ti,pair,name:pair.map(pi=>t.players[pi]).join(' & '),pts:0,pf:0,pa:0,pj:0,g:0,p:0,e:0}));
   const k2t={};teams.forEach(tm=>k2t[key(tm.pair)]=tm);
+  const games=t.scoring==='games';
   t.schedule.forEach(rd=>rd.matches.forEach(m=>{
-    if(m.scoreA==null)return;
+    if(m.scoreA==null||m.scoreB==null)return;
     const A=k2t[key(m.teamA)],B=k2t[key(m.teamB)];if(!A||!B)return;
     const aw=m.scoreA>m.scoreB,bw=m.scoreB>m.scoreA;
     A.pts+=m.scoreA;A.pf+=m.scoreA;A.pa+=m.scoreB;A.pj++;if(aw)A.g++;else if(bw)A.p++;else A.e++;
     B.pts+=m.scoreB;B.pf+=m.scoreB;B.pa+=m.scoreA;B.pj++;if(bw)B.g++;else if(aw)B.p++;else B.e++;
   }));
-  teams.forEach(tm=>tm.dif=tm.pf-tm.pa);
-  teams.sort((a,b)=>b.pts-a.pts||b.dif-a.dif||a.name.localeCompare(b.name));
+  teams.forEach(tm=>{tm.dif=tm.pf-tm.pa;tm.rankVal=games?tm.g:tm.pts;});
+  teams.sort((a,b)=>b.rankVal-a.rankVal||b.dif-a.dif||a.name.localeCompare(b.name));
   return teams;
 }
 
@@ -585,7 +589,10 @@ function renderHome(){
 /* ============ VISTA: NUEVO TORNEO ============ */
 let selectedIds=[], newMode='americano', pairMethod='ranking';
 let manualPairs=[], manualPending=null, randomTeams=null;
-let newName='', newPoints=null;
+let newName='', newPoints=null, pointsEdited=false, newScoring='points';
+function lastPoints(){return +localStorage.getItem('padel_last_points')||0;}
+function rememberPoints(p){localStorage.setItem('padel_last_points',String(p));}
+function defaultNewPoints(n){return lastPoints()||(newMode==='pairs'?24:defaultPoints(n));}
 function maxPlayers(){return newMode==='pairs'?16:12;}
 function captureNewForm(){
   const nEl=document.getElementById('tName');if(nEl&&nEl.value)newName=nEl.value;
@@ -595,8 +602,9 @@ function captureNewForm(){
   if(pEl&&pEl.value!==''&&!isNaN(+pEl.value)&&+pEl.value>0)newPoints=+pEl.value;
 }
 function setMode(m){captureNewForm();newMode=m;newName='';manualPairs=[];manualPending=null;randomTeams=null;renderNew();}
+function setScoring(s){captureNewForm();newScoring=s;renderNew();}
 function renderNew(){
-  screen='new';
+  screen='new';pointsEdited=false;
   backBtn.style.display='block';titleEl.textContent='Nuevo torneo';
   const defName=(newMode==='pairs'?'Parejas ':'Americano ')+new Date().toLocaleDateString('es');
   app.innerHTML=`
@@ -607,10 +615,16 @@ function renderNew(){
     </div>
     <label>Nombre del torneo</label>
     <input id="tName" value="${esc(newName||defName)}"/>
+    <label>Tipo de marcador</label>
+    <div class="tabs" style="margin-bottom:4px">
+      <button class="${newScoring==='points'?'active':''}" onclick="setScoring('points')">Puntos (suma)</button>
+      <button class="${newScoring==='games'?'active':''}" onclick="setScoring('games')">Sets / juegos</button>
+    </div>
     <div class="row">
-      <div><label>Puntos por partido</label><input id="tPoints" type="number" inputmode="numeric" value="${newPoints!=null?esc(String(newPoints)):24}"/></div>
+      <div ${newScoring==='games'?'hidden':''}><label>Puntos por partido</label><input id="tPoints" type="number" inputmode="numeric" value="${newPoints!=null?esc(String(newPoints)):(lastPoints()||24)}" oninput="pointsEdited=true"/></div>
       <div><label>Rondas</label><input id="tRounds" type="number" inputmode="numeric" value="" ${newMode==='pairs'?'readonly':''}/></div>
     </div>
+    ${newScoring==='games'?'<p class="muted" style="margin:6px 0 0">1 set por partido — anotas los juegos de cada equipo (ej. 6-4). Gana quien gana más sets.</p>':''}
     <p class="muted" id="hint" style="margin-top:10px"></p>
   </div>
   <div class="card">
@@ -666,7 +680,7 @@ function updateSelUI(){
   }else{
     if(scEl)scEl.innerHTML=`Seleccionados: <b>${n}</b>`+(n<4?' — mínimo 4':n>12?' — máximo 12':'');
     if(n>=4&&n<=12){
-      if(pEl)pEl.value=defaultPoints(n);
+      if(pEl&&!pointsEdited&&!pEl.value)pEl.value=defaultNewPoints(n);
       if(rEl)rEl.value=defaultRounds(n);
       const courts=Math.floor(n/4),sit=n-courts*4;
       if(hEl)hEl.innerHTML=`Cada ronda: <b>${courts}</b> cancha(s), <b>${sit}</b> en descanso. `+
@@ -738,13 +752,14 @@ function doGenerate(){
   const roster=loadRoster();
   const chosen=selectedIds.map(id=>roster.find(p=>p.id===id)).filter(Boolean);
   const players=chosen.map(p=>p.name),playerIds=chosen.map(p=>p.id);
-  const pts=+newPoints||defaultPoints(n),rounds=defaultRounds(n);
+  const games=newScoring==='games';
+  const pts=games?0:(+newPoints||defaultPoints(n)),rounds=defaultRounds(n);
   const name=(newName||'').trim()||'Americano';
   toast('Generando fixture balanceado…');
   setTimeout(()=>{
     const{schedule}=generateSchedule(n,rounds,{restarts:5000});
-    const t={id:'t'+Date.now(),name,createdAt:Date.now(),mode:'americano',numPlayers:n,players,playerIds,pointsPerMatch:pts,numRounds:rounds,schedule,scores:{}};
-    saveTournament(t);logEvent('torneo:creado','americano '+n+'j '+rounds+'r '+pts+'pts');openTournament(t.id);
+    const t={id:'t'+Date.now(),name,createdAt:Date.now(),mode:'americano',scoring:newScoring,numPlayers:n,players,playerIds,pointsPerMatch:pts,numRounds:rounds,schedule,scores:{}};
+    if(!games)rememberPoints(pts);saveTournament(t);logEvent('torneo:creado','americano '+newScoring+' '+n+'j '+rounds+'r');openTournament(t.id);
   },30);
 }
 function doGeneratePairs(){
@@ -759,14 +774,15 @@ function doGeneratePairs(){
   const players=orderedIds.map(id=>{const p=roster.find(x=>x.id===id);return p?p.name:'?';});
   const playerIds=orderedIds, idxOf={};playerIds.forEach((id,i)=>idxOf[id]=i);
   const teams=teamIds.map(pr=>[idxOf[pr[0]],idxOf[pr[1]]]);
-  const pts=+newPoints||24,rounds=teams.length%2===0?teams.length-1:teams.length;
+  const games=newScoring==='games';
+  const pts=games?0:(+newPoints||24),rounds=teams.length%2===0?teams.length-1:teams.length;
   const name=(newName||'').trim()||'Parejas';
   toast('Generando torneo…');
   setTimeout(()=>{
     const schedule=buildPairsSchedule(teams.map(pr=>pr.slice()));
     const teamsFlat=teams.reduce((a,pr)=>a.concat(pr),[]); // plano para Firestore
-    const t={id:'t'+Date.now(),name,createdAt:Date.now(),mode:'pairs',numPlayers:n,players,playerIds,teamsFlat,pointsPerMatch:pts,numRounds:rounds,schedule,scores:{}};
-    saveTournament(t);logEvent('torneo:creado','parejas '+n+'j '+teams.length+'eq '+rounds+'r '+pts+'pts');openTournament(t.id);
+    const t={id:'t'+Date.now(),name,createdAt:Date.now(),mode:'pairs',scoring:newScoring,numPlayers:n,players,playerIds,teamsFlat,pointsPerMatch:pts,numRounds:rounds,schedule,scores:{}};
+    if(!games)rememberPoints(pts);saveTournament(t);logEvent('torneo:creado','parejas '+newScoring+' '+n+'j '+teams.length+'eq '+rounds+'r');openTournament(t.id);
   },30);
 }
 
@@ -796,31 +812,54 @@ function scoreCell(m,ri,mi,team){
 // La ronda en curso es la primera que tenga algún partido sin resultado.
 function currentRoundIndex(t){
   t=t||current;
-  for(let i=0;i<t.schedule.length;i++)if(t.schedule[i].matches.some(m=>m.scoreA==null))return i;
+  for(let i=0;i<t.schedule.length;i++)if(t.schedule[i].matches.some(m=>m.scoreA==null||m.scoreB==null))return i;
   return -1; // todas completas
 }
 let onlyLive=false;
 function toggleOnlyLive(){onlyLive=!onlyLive;renderRondas();}
+function changePoints(){
+  if(current.closed){toast('Reabre el torneo para cambiar los puntos');return;}
+  modalPrompt('Puntos por partido:',String(current.pointsPerMatch),val=>{
+    const np=parseInt(val);
+    if(!np||np<2){toast('Puntos inválidos');return;}
+    if(np===current.pointsPerMatch)return;
+    const loaded=Object.keys(current.scores||{}).length;
+    const apply=()=>{
+      current.pointsPerMatch=np;current.scores={};
+      current.schedule.forEach(rd=>rd.matches.forEach(m=>{m.scoreA=null;m.scoreB=null;}));
+      rememberPoints(np);
+      saveTournament(current); // reescribe completo: nuevos puntos + marcadores en blanco
+      logEvent('torneo:puntos',current.id+' -> '+np+(loaded?' (borró '+loaded+')':''));
+      onlyLive=false;renderRondas();toast('Puntos actualizados a '+np);
+    };
+    if(loaded>0)modalConfirm('Cambiar a '+np+' puntos borrará los '+loaded+' resultado(s) ya cargados para volver a escribirlos en la nueva escala.\n¿Continuar?',apply);
+    else apply();
+  });
+}
 function renderRondas(){
   const c=document.getElementById('tabContent');let h='';
-  const live=currentRoundIndex();
+  const live=currentRoundIndex(), games=current.scoring==='games';
+  h+=games
+    ? `<div class="ptsbar">Marcador: <b>por juegos</b> · 1 set por partido</div>`
+    : `<div class="ptsbar">Puntos por partido: <b>${current.pointsPerMatch}</b>${current.closed?'':`<button class="chip-sel" style="margin:0 0 0 auto;padding:5px 12px" onclick="changePoints()">✏️ Cambiar</button>`}</div>`;
   if(current.closed)h+=`<div class="lockbar">🔒 Torneo cerrado — los resultados no se pueden modificar</div>`;
   if(live<0)h+=`<div class="lockbar" style="border-color:var(--green-l);color:var(--accent)">✅ Todos los partidos cargados</div>`;
   else h+=`<button class="btn secondary" style="margin-top:0;margin-bottom:12px" onclick="toggleOnlyLive()">${onlyLive?'📋 Ver todas las rondas':'👁️ Ver solo la ronda en curso'}</button>`;
   current.schedule.forEach((rd,ri)=>{
     if(onlyLive&&live>=0&&ri!==live)return;
-    const isLive=(ri===live), done=rd.matches.every(m=>m.scoreA!=null);
+    const isLive=(ri===live), done=rd.matches.every(m=>m.scoreA!=null&&m.scoreB!=null);
     const restNames=rd.resting.map(pname).join(', ');
     h+=`<div class="round-h${isLive?' live':''}"><span class="num">${ri+1}</span>
       <span class="ttl">Ronda ${ri+1}${done?' ✅':''}</span>
       ${isLive?'<span class="live-badge">EN CURSO</span>':''}
       ${rd.resting.length?`<span class="rest">😴 ${esc(restNames)}</span>`:''}</div>`;
     rd.matches.forEach((m,mi)=>{
-      const aWin=m.scoreA!=null&&m.scoreA>m.scoreB, bWin=m.scoreB!=null&&m.scoreB>m.scoreA;
+      const both=m.scoreA!=null&&m.scoreB!=null;
+      const aWin=both&&m.scoreA>m.scoreB, bWin=both&&m.scoreB>m.scoreA;
       h+=`<div class="match${isLive?' live':''}"><div class="court">🏟️ Cancha ${mi+1}</div>
         <div class="team ${aWin?'win':''}"><span class="names">${esc(pname(m.teamA[0]))} & ${esc(pname(m.teamA[1]))}</span>
           <span class="sc">${scoreCell(m,ri,mi,'A')}</span></div>
-        <div class="vs">VS · suma ${current.pointsPerMatch}</div>
+        <div class="vs">VS · ${games?'juegos del set':'suma '+current.pointsPerMatch}</div>
         <div class="team ${bWin?'win':''}"><span class="names">${esc(pname(m.teamB[0]))} & ${esc(pname(m.teamB[1]))}</span>
           <span class="sc">${scoreCell(m,ri,mi,'B')}</span></div></div>`;
     });
@@ -830,29 +869,40 @@ function renderRondas(){
 }
 function setScore(ri,mi,team,val){
   if(current.closed)return;
-  const m=current.schedule[ri].matches[mi];const total=current.pointsPerMatch;
-  if(val===''){m.scoreA=null;m.scoreB=null;}
-  else{let v=Math.max(0,Math.min(total,parseInt(val)||0));
-    if(team==='A'){m.scoreA=v;m.scoreB=total-v;}else{m.scoreB=v;m.scoreA=total-v;}}
+  const m=current.schedule[ri].matches[mi];
+  const games=current.scoring==='games';
+  if(val===''){
+    // en modo juegos se borra solo el lado editado; en puntos, ambos
+    if(games){if(team==='A')m.scoreA=null;else m.scoreB=null;}
+    else{m.scoreA=null;m.scoreB=null;}
+  }else{
+    let v=Math.max(0,parseInt(val)||0);
+    if(games){v=Math.min(v,30);if(team==='A')m.scoreA=v;else m.scoreB=v;}      // juegos: independientes
+    else{const total=current.pointsPerMatch;v=Math.min(v,total);              // puntos: complemento
+      if(team==='A'){m.scoreA=v;m.scoreB=total-v;}else{m.scoreB=v;m.scoreA=total-v;}}
+  }
   if(!current.scores)current.scores={};
-  current.scores[scoreKey(ri,mi)]={a:m.scoreA,b:m.scoreB};
+  if(m.scoreA==null&&m.scoreB==null)delete current.scores[scoreKey(ri,mi)];
+  else current.scores[scoreKey(ri,mi)]={a:m.scoreA,b:m.scoreB};
   saveTournamentLocal(current);                          // local: torneo completo
   cloudPushScore(current.id,ri,mi,m.scoreA,m.scoreB);    // nube: SOLO este marcador
-  logEvent('marcador','R'+(ri+1)+'P'+(mi+1)+' '+(m.scoreA==null?'borrado':m.scoreA+'-'+m.scoreB));
+  const sa=m.scoreA==null?'?':m.scoreA, sb=m.scoreB==null?'?':m.scoreB;
+  logEvent('marcador','R'+(ri+1)+'P'+(mi+1)+' '+((m.scoreA==null&&m.scoreB==null)?'borrado':sa+'-'+sb));
   renderRondas();
 }
 
 function computeStandings(t){
   t=t||current;
   const st=t.players.map((nm,i)=>({i,name:nm,pts:0,pf:0,pa:0,pj:0,g:0,p:0,e:0}));
+  const games=t.scoring==='games';
   t.schedule.forEach(rd=>rd.matches.forEach(m=>{
-    if(m.scoreA==null)return;
+    if(m.scoreA==null||m.scoreB==null)return;
     const aw=m.scoreA>m.scoreB, bw=m.scoreB>m.scoreA;
     for(const pl of m.teamA){const s=st[pl];s.pts+=m.scoreA;s.pf+=m.scoreA;s.pa+=m.scoreB;s.pj++;if(aw)s.g++;else if(bw)s.p++;else s.e++;}
     for(const pl of m.teamB){const s=st[pl];s.pts+=m.scoreB;s.pf+=m.scoreB;s.pa+=m.scoreA;s.pj++;if(bw)s.g++;else if(aw)s.p++;else s.e++;}
   }));
-  st.forEach(s=>s.dif=s.pf-s.pa);
-  st.sort((a,b)=>b.pts-a.pts||b.dif-a.dif||a.name.localeCompare(b.name));
+  st.forEach(s=>{s.dif=s.pf-s.pa;s.rankVal=games?s.g:s.pts;});
+  st.sort((a,b)=>b.rankVal-a.rankVal||b.dif-a.dif||a.name.localeCompare(b.name));
   return st;
 }
 function tournamentStandings(){return current.mode==='pairs'?computeTeamStandings(current):computeStandings();}
@@ -860,24 +910,25 @@ function renderTabla(){
   const c=document.getElementById('tabContent');const st=tournamentStandings();
   const ranked=assignPositions(st); // posición + puntos de ranking (maneja empates)
   const entLabel=current.mode==='pairs'?'Pareja':'Jugador';
-  const complete=isComplete(current);
+  const complete=isComplete(current), games=current.scoring==='games';
+  const col3=games?'Sets':'G-P-E', col4=games?'Juegos':'Pts';
   let h=`<div class="card" style="padding:0;overflow-x:auto"><table class="tbl-compact"><thead><tr>
     <th class="n">#</th><th>${entLabel}</th><th style="text-align:center">PJ</th>
-    <th style="text-align:center">G-P-E</th>
-    <th style="text-align:right">Pts</th><th style="text-align:right">Dif</th>
+    <th style="text-align:center">${col3}</th>
+    <th style="text-align:right">${col4}</th><th style="text-align:right">Dif</th>
     <th style="text-align:right">🏅</th></tr></thead><tbody>`;
   st.forEach((s,i)=>{
     const cls=i===0?'top1':i===1?'top2':i===2?'top3':'';
     const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1);
     h+=`<tr class="${cls}"><td class="n">${medal}</td><td class="nm-cell">${esc(s.name)}</td>
       <td style="text-align:center">${s.pj}</td>
-      <td style="text-align:center;font-size:12px">${s.g}-${s.p}-${s.e}</td>
-      <td class="pts">${s.pts}</td>
+      <td style="text-align:center;font-size:12px">${games?s.g:s.g+'-'+s.p+'-'+s.e}</td>
+      <td class="pts">${games?s.pf:s.pts}</td>
       <td class="dif">${s.dif>=0?'+':''}${s.dif}</td>
       <td style="text-align:right;color:var(--gold);font-weight:700">+${ranked[i].posPoints}</td></tr>`;
   });
   h+=`</tbody></table></div>
-    <p class="muted center">G-P-E = Ganados-Perdidos-Empatados · Dif = diferencia de puntos.<br>
+    <p class="muted center">${games?'Sets = sets ganados · Juegos = juegos a favor · Dif = diferencia de juegos.':'G-P-E = Ganados-Perdidos-Empatados · Dif = diferencia de puntos.'}<br>
     🏅 = puntos que suma al ranking según la posición${current.mode==='pairs'?' (cada jugador de la pareja)':''}.
     ${complete?'':'<br>⏳ Se otorgan al completar todos los partidos.'}</p>
     <button class="btn wa" onclick="shareStandingsImage()">📷 Compartir imagen por WhatsApp</button>
@@ -952,10 +1003,12 @@ function share(text){
   else{window.open('https://wa.me/?text='+encodeURIComponent(text),'_blank');}
 }
 function shareStandings(){
-  const st=tournamentStandings();
+  const st=tournamentStandings(),games=current.scoring==='games';
   let t=`🎾 *${current.name}* — Posiciones\n\n`;
   st.forEach((s,i)=>{const m=i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}.`;
-    t+=`${m} ${s.name} — *${s.pts}* pts · ${s.g}-${s.p}-${s.e} (${s.dif>=0?'+':''}${s.dif})\n`;});
+    t+= games
+      ? `${m} ${s.name} — *${s.g}* sets · ${s.pf} juegos (${s.dif>=0?'+':''}${s.dif})\n`
+      : `${m} ${s.name} — *${s.pts}* pts · ${s.g}-${s.p}-${s.e} (${s.dif>=0?'+':''}${s.dif})\n`;});
   t+=`\nGenerado con Americano Pádel`;share(t);
 }
 
@@ -1011,25 +1064,25 @@ async function shareBlob(blob,filename,title,text){
 function trimName(n){return n.length>16?n.slice(0,15)+'…':n;}
 async function shareStandingsImage(){
   toast('Generando imagen…');
-  const st=tournamentStandings();
+  const st=tournamentStandings(),games=current.scoring==='games';
   const columns=[
     {label:'#',x:46,align:'center',bold:true},
     {label:current.mode==='pairs'?'Pareja':'Jugador',x:80,align:'left'},
-    {label:'G-P-E',x:432,align:'center',size:22},
-    {label:'Pts',x:620,align:'right',bold:true,color:'#c8ff3d'},
+    {label:games?'Sets':'G-P-E',x:432,align:'center',size:22},
+    {label:games?'Juegos':'Pts',x:620,align:'right',bold:true,color:'#c8ff3d'},
     {label:'Dif',x:736,align:'right',color:'#9aa3ad',size:22}
   ];
   const rows=st.map((s,i)=>[
     i<3?['🥇','🥈','🥉'][i]:String(i+1),
     trimName(s.name),
-    `${s.g}-${s.p}-${s.e}`,
-    String(s.pts),
+    games?String(s.g):`${s.g}-${s.p}-${s.e}`,
+    String(games?s.pf:s.pts),
     (s.dif>=0?'+':'')+s.dif
   ]);
   const blob=await makeTableImage({
     title:current.name,
     subtitle:'Posiciones · '+new Date(current.createdAt).toLocaleDateString('es'),
-    footer:'G-P-E: Ganados-Perdidos-Empatados · Americano Pádel',
+    footer:games?'Sets ganados · diferencia de juegos · Americano Pádel':'G-P-E: Ganados-Perdidos-Empatados · Americano Pádel',
     columns,rows
   });
   shareBlob(blob,'posiciones.png',current.name,'Posiciones — '+current.name);
