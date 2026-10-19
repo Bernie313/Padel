@@ -70,6 +70,7 @@
   /* tabs */
   .tabs{display:flex; background:var(--card); border-radius:12px; padding:4px; margin-bottom:14px; border:1px solid var(--line)}
   .tabs button{flex:1; padding:11px; border:0; background:transparent; color:var(--muted); font-weight:700; font-size:14px; border-radius:9px; cursor:pointer}
+  .tabs.tabs-sm button{font-size:12px; padding:9px 2px}
   .tabs button.active{background:var(--green); color:#fff}
 
   /* rondas */
@@ -366,6 +367,81 @@ function computeTeamStandings(t){
   return teams;
 }
 
+/* ============ RATING DE HABILIDAD (Elo) + BALANCEADOR ============ */
+// Nivel interno por jugador, calculado de TODO el historial (no toca el ranking FIP).
+// Usa la "cuota" del marcador como resultado (6-4 -> 0.6), así el margen cuenta.
+function computeElo(){
+  const K=24,BASE=1500,rating={},games={};
+  const get=id=>(id in rating?rating[id]:(rating[id]=BASE,games[id]=0,BASE));
+  loadActive().filter(t=>t.playerIds).sort((a,b)=>a.createdAt-b.createdAt).forEach(t=>{
+    t.schedule.forEach(rd=>rd.matches.forEach(m=>{
+      if(m.scoreA==null)return;
+      const a1=t.playerIds[m.teamA[0]],a2=t.playerIds[m.teamA[1]],b1=t.playerIds[m.teamB[0]],b2=t.playerIds[m.teamB[1]];
+      if(!a1||!a2||!b1||!b2)return;
+      const Ra=(get(a1)+get(a2))/2,Rb=(get(b1)+get(b2))/2;
+      const Ea=1/(1+Math.pow(10,(Rb-Ra)/400));
+      const tot=m.scoreA+m.scoreB;if(tot<=0)return;
+      const d=K*((m.scoreA/tot)-Ea);
+      rating[a1]+=d;rating[a2]+=d;rating[b1]-=d;rating[b2]-=d;
+      games[a1]++;games[a2]++;games[b1]++;games[b2]++;
+    }));
+  });
+  return {rating,games};
+}
+// Cuántas veces (y qué tan reciente) han sido pareja fija dos jugadores.
+function partnerHistory(){
+  const tours=loadActive().filter(t=>t.mode==='pairs'&&t.playerIds).sort((a,b)=>a.createdAt-b.createdAt);
+  const hist={},total=tours.length;
+  tours.forEach((t,ti)=>getTeams(t).forEach(pair=>{
+    const i1=t.playerIds[pair[0]],i2=t.playerIds[pair[1]];if(!i1||!i2)return;
+    const k=[i1,i2].sort().join('|');
+    if(!hist[k])hist[k]={count:0,last:-1};
+    hist[k].count++;hist[k].last=ti;
+  }));
+  return {hist,total};
+}
+function repeatCost(id1,id2,ph){
+  const h=ph.hist[[id1,id2].sort().join('|')];if(!h)return 0;
+  const recency=ph.total>0?1+2*((h.last+1)/ph.total):1; // reciente pesa hasta 3x
+  return h.count*recency;
+}
+let balanceBias='mid';
+function balanceWeights(){return balanceBias==='even'?{bal:1,rep:15}:balanceBias==='rotate'?{bal:1,rep:95}:{bal:1,rep:45};}
+// Busca la formación que minimiza (desbalance de nivel) + (repetir parejas).
+function balancedTeams(seedOff){
+  const ids=selectedChosen().map(c=>c.id),n=ids.length;
+  const {rating}=computeElo(),ph=partnerHistory(),W=balanceWeights();
+  const elo=id=>(id in rating?rating[id]:1500);
+  function cost(pairs){
+    const tot=pairs.map(([a,b])=>elo(a)+elo(b));
+    const mean=tot.reduce((x,y)=>x+y,0)/tot.length;
+    const rms=Math.sqrt(tot.reduce((s,v)=>s+(v-mean)*(v-mean),0)/tot.length);
+    let rep=0;pairs.forEach(([a,b])=>rep+=repeatCost(a,b,ph));
+    return W.bal*rms+W.rep*rep;
+  }
+  const sorted=[...ids].sort((a,b)=>elo(b)-elo(a));
+  let best=[];for(let i=0;i<n/2;i++)best.push([sorted[i],sorted[n-1-i]]);
+  let bestC=cost(best);
+  const restarts=2500,off=(seedOff||0)*7919;
+  for(let it=0;it<restarts;it++){
+    const sh=shuffle([...ids],mulberry32((it*2654435761+off+1)>>>0));
+    let pairs=[];for(let i=0;i<n;i+=2)pairs.push([sh[i],sh[i+1]]);
+    let c=cost(pairs),improved=true;
+    while(improved){
+      improved=false;
+      for(let i=0;i<pairs.length&&!improved;i++)for(let j=i+1;j<pairs.length&&!improved;j++)
+        for(const sw of [[0,0],[0,1]]){
+          const np=pairs.map(p=>p.slice()),tmp=np[i][sw[0]];np[i][sw[0]]=np[j][sw[1]];np[j][sw[1]]=tmp;
+          const nc=cost(np);if(nc<c-1e-9){pairs=np;c=nc;improved=true;break;}
+        }
+    }
+    if(c<bestC-1e-9){bestC=c;best=pairs;}
+  }
+  return best;
+}
+// Nivel combinado de una pareja y resumen de balance, para la vista previa.
+function teamLevel(pair,rating){return Math.round((rating[pair[0]]||1500)+(rating[pair[1]]||1500));}
+
 function computeRanking(){
   const roster=loadRoster(),stats={};
   roster.forEach(p=>stats[p.id]={id:p.id,name:p.name,pts:0,tournaments:0,titles:0,amer:0,bestPos:99,results:[]});
@@ -587,8 +663,8 @@ function renderHome(){
 }
 
 /* ============ VISTA: NUEVO TORNEO ============ */
-let selectedIds=[], newMode='americano', pairMethod='ranking';
-let manualPairs=[], manualPending=null, randomTeams=null;
+let selectedIds=[], newMode='americano', pairMethod='balanced';
+let manualPairs=[], manualPending=null, randomTeams=null, balancedCache=null, balancedSeed=0;
 let newName='', newPoints=null, pointsEdited=false, newScoring='points';
 function lastPoints(){return +localStorage.getItem('padel_last_points')||0;}
 function rememberPoints(p){localStorage.setItem('padel_last_points',String(p));}
@@ -638,9 +714,10 @@ function renderNew(){
     </div>
   </div>
   ${newMode==='pairs'?`<div class="card"><h2 style="margin-top:0">Formación de parejas</h2>
-    <div class="tabs" style="margin-bottom:10px">
+    <div class="tabs tabs-sm" style="margin-bottom:10px">
+      <button class="${pairMethod==='balanced'?'active':''}" onclick="setPairMethod('balanced')">⚖️ Balance</button>
       <button class="${pairMethod==='ranking'?'active':''}" onclick="setPairMethod('ranking')">Ranking</button>
-      <button class="${pairMethod==='random'?'active':''}" onclick="setPairMethod('random')">Aleatorio</button>
+      <button class="${pairMethod==='random'?'active':''}" onclick="setPairMethod('random')">Azar</button>
       <button class="${pairMethod==='manual'?'active':''}" onclick="setPairMethod('manual')">Manual</button>
     </div>
     <div id="pairsBody"></div></div>`:''}
@@ -663,7 +740,7 @@ function toggleSel(id){
   else{if(selectedIds.length>=maxPlayers()){toast('Máximo '+maxPlayers()+' jugadores');return;}selectedIds.push(id);}
   manualPairs=manualPairs.filter(pr=>selectedIds.includes(pr[0])&&selectedIds.includes(pr[1]));
   if(manualPending&&!selectedIds.includes(manualPending))manualPending=null;
-  randomTeams=null;
+  randomTeams=null;balancedCache=null;
   renderChips();
   if(newMode==='pairs')renderPairsSection();
 }
@@ -693,13 +770,20 @@ function addNewPlayerToRoster(){
   if(!nm)return;
   const p=addRosterPlayer(nm);inp.value='';inp.focus();
   if(p&&!selectedIds.includes(p.id)&&selectedIds.length<maxPlayers())selectedIds.push(p.id);
-  randomTeams=null;renderChips();if(newMode==='pairs')renderPairsSection();
+  randomTeams=null;balancedCache=null;renderChips();if(newMode==='pairs')renderPairsSection();
 }
 
 /* ---- Parejas: formación ---- */
 function idName(id){const p=loadRoster().find(x=>x.id===id);return p?p.name:'?';}
 function selectedChosen(){const roster=loadRoster();return selectedIds.map(id=>roster.find(p=>p.id===id)).filter(Boolean);}
 function setPairMethod(m){pairMethod=m;if(m==='random'&&!randomTeams)shuffleRandom();renderNew();}
+function getBalanced(force){
+  if(force||!balancedCache||balancedCache.reduce((a,p)=>a+p.length,0)!==selectedIds.length)
+    balancedCache=balancedTeams(balancedSeed);
+  return balancedCache;
+}
+function setBias(b){balanceBias=b;balancedCache=null;renderPairsSection();}
+function rerollBalanced(){balancedSeed++;balancedCache=balancedTeams(balancedSeed);renderPairsSection();}
 function pairsByRanking(){
   const chosen=selectedChosen(),rk=computeRanking(),pos={};rk.forEach((s,i)=>pos[s.id]=i);
   const mid=rk.length?rk.length/2-0.5:0;
@@ -720,15 +804,29 @@ function manualPick(id){
   renderPairsSection();
 }
 function manualDissolve(i){manualPairs.splice(i,1);renderPairsSection();}
-function teamsPreviewHtml(teams){
+function teamsPreviewHtml(teams,rating){
   return `<div class="card" style="background:var(--card2);margin:8px 0 0">`+teams.map((pr,i)=>
-    `<div style="padding:7px 0;${i<teams.length-1?'border-bottom:1px solid var(--line)':''}"><b>Equipo ${i+1}:</b> ${esc(idName(pr[0]))} & ${esc(idName(pr[1]))}</div>`).join('')+`</div>`;
+    `<div style="padding:7px 0;${i<teams.length-1?'border-bottom:1px solid var(--line)':''}"><b>Equipo ${i+1}:</b> ${esc(idName(pr[0]))} & ${esc(idName(pr[1]))}${rating?`<span class="muted" style="float:right">nivel ${teamLevel(pr,rating)}</span>`:''}</div>`).join('')+`</div>`;
 }
 function renderPairsSection(){
   const body=document.getElementById('pairsBody');if(!body)return;
   const n=selectedIds.length;
   if(n<4||n%2!==0){body.innerHTML=`<p class="muted">Selecciona un número <b>par</b> de jugadores (mínimo 4) para formar parejas.</p>`;return;}
-  if(pairMethod==='ranking'){
+  if(pairMethod==='balanced'){
+    const teams=getBalanced(),{rating}=computeElo();
+    const totals=teams.map(pr=>teamLevel(pr,rating)),spread=Math.max(...totals)-Math.min(...totals);
+    const hasHist=loadActive().some(t=>isComplete(t)&&t.playerIds);
+    let h=`<div class="tabs tabs-sm" style="margin-bottom:8px">
+      <button class="${balanceBias==='even'?'active':''}" onclick="setBias('even')">Más parejo</button>
+      <button class="${balanceBias==='mid'?'active':''}" onclick="setBias('mid')">Equilibrado</button>
+      <button class="${balanceBias==='rotate'?'active':''}" onclick="setBias('rotate')">Rotar más</button>
+    </div>
+    <p class="muted">Balancea por <b>nivel real</b> (todo el historial) y evita repetir parejas recientes.${hasHist?'':' ⚠️ Aún sin historial: al inicio es casi azar y mejora con cada torneo.'}</p>`;
+    h+=teamsPreviewHtml(teams,rating);
+    h+=`<p class="muted center">Diferencia de nivel entre equipos: <b>${spread}</b> ${spread<=40?'✅':spread<=90?'👍':'⚠️'}</p>`;
+    h+=`<button class="btn secondary" onclick="rerollBalanced()">🔁 Otra combinación</button>`;
+    body.innerHTML=h;
+  }else if(pairMethod==='ranking'){
     body.innerHTML=`<p class="muted">Empareja al mejor rankeado con el de más abajo, para equipos parejos (los no rankeados van al medio).</p>`+teamsPreviewHtml(pairsByRanking());
   }else if(pairMethod==='random'){
     if(!randomTeams||randomTeams.flat().length!==n)shuffleRandom();
@@ -766,7 +864,8 @@ function doGeneratePairs(){
   const n=selectedIds.length;
   if(n<4||n%2!==0){toast('Selecciona un número par de jugadores (mínimo 4)');return;}
   let teamIds;
-  if(pairMethod==='ranking')teamIds=pairsByRanking();
+  if(pairMethod==='balanced')teamIds=getBalanced();
+  else if(pairMethod==='ranking')teamIds=pairsByRanking();
   else if(pairMethod==='random'){if(!randomTeams)shuffleRandom();teamIds=randomTeams;}
   else{if(manualPairs.length!==n/2){toast('Faltan parejas por formar');return;}teamIds=manualPairs;}
   const roster=loadRoster();
@@ -1290,7 +1389,7 @@ function doClearLog(){modalConfirm('¿Borrar el registro de diagnóstico?',()=>{
 migrate();
 cloudConnect();
 purgeOldTrash();
-logEvent('app:abierta','v10');
+logEvent('app:abierta','v13');
 goHome();
 if('serviceWorker'in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
