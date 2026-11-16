@@ -441,6 +441,28 @@ function balancedTeams(seedOff){
 }
 // Nivel combinado de una pareja y resumen de balance, para la vista previa.
 function teamLevel(pair,rating){return Math.round((rating[pair[0]]||1500)+(rating[pair[1]]||1500));}
+// Historial de "compañeros" entre dos jugadores: como pareja fija y en cualquier modo.
+function pairStats(){
+  const fixed={},any={};
+  loadActive().forEach(t=>{
+    if(!t.playerIds)return;const isP=t.mode==='pairs';const seen=new Set();
+    (t.schedule||[]).forEach(rd=>(rd.matches||[]).forEach(m=>{
+      [m.teamA,m.teamB].forEach(tm=>{
+        if(!tm||tm.length<2)return;
+        const a=t.playerIds[tm[0]],b=t.playerIds[tm[1]];if(!a||!b)return;
+        const k=[a,b].sort().join('|');if(seen.has(k))return;seen.add(k);
+        any[k]=(any[k]||0)+1;if(isP)fixed[k]=(fixed[k]||0)+1;
+      });
+    }));
+  });
+  return {fixed,any};
+}
+function pairBadge(st,a,b){
+  const k=[a,b].sort().join('|'),f=st.fixed[k]||0,an=st.any[k]||0;
+  if(f>0)return `<span style="color:var(--gold)">⚠️ ya fueron pareja ×${f}</span>`;
+  if(an===0)return `<span style="color:var(--accent)">✨ nunca han jugado juntos</span>`;
+  return `<span style="color:var(--green-l)">✨ pareja nueva</span>`;
+}
 
 function computeRanking(){
   const roster=loadRoster(),stats={};
@@ -805,8 +827,9 @@ function manualPick(id){
 }
 function manualDissolve(i){manualPairs.splice(i,1);renderPairsSection();}
 function teamsPreviewHtml(teams,rating){
+  const st=pairStats();
   return `<div class="card" style="background:var(--card2);margin:8px 0 0">`+teams.map((pr,i)=>
-    `<div style="padding:7px 0;${i<teams.length-1?'border-bottom:1px solid var(--line)':''}"><b>Equipo ${i+1}:</b> ${esc(idName(pr[0]))} & ${esc(idName(pr[1]))}${rating?`<span class="muted" style="float:right">nivel ${teamLevel(pr,rating)}</span>`:''}</div>`).join('')+`</div>`;
+    `<div style="padding:7px 0;${i<teams.length-1?'border-bottom:1px solid var(--line)':''}"><b>Equipo ${i+1}:</b> ${esc(idName(pr[0]))} & ${esc(idName(pr[1]))}${rating?`<span class="muted" style="float:right">nivel ${teamLevel(pr,rating)}</span>`:''}<div style="font-size:11px;margin-top:2px">${pairBadge(st,pr[0],pr[1])}</div></div>`).join('')+`</div>`;
 }
 function renderPairsSection(){
   const body=document.getElementById('pairsBody');if(!body)return;
@@ -832,9 +855,9 @@ function renderPairsSection(){
     if(!randomTeams||randomTeams.flat().length!==n)shuffleRandom();
     body.innerHTML=teamsPreviewHtml(randomTeams)+`<button class="btn secondary" onclick="shuffleRandom();renderPairsSection()">🔀 Barajear de nuevo</button>`;
   }else{
-    let h='';
+    let h='';const st=pairStats();
     if(manualPairs.length)h+=`<p class="muted">Parejas formadas:</p>`+manualPairs.map((pr,i)=>
-      `<div class="titem" style="margin-bottom:6px"><span class="ic">👥</span><div class="meta"><div class="nm">${esc(idName(pr[0]))} & ${esc(idName(pr[1]))}</div></div><button class="chip-sel" style="margin:0" onclick="manualDissolve(${i})">✕</button></div>`).join('');
+      `<div class="titem" style="margin-bottom:6px"><span class="ic">👥</span><div class="meta"><div class="nm">${esc(idName(pr[0]))} & ${esc(idName(pr[1]))}</div><div class="sub" style="font-size:11px">${pairBadge(st,pr[0],pr[1])}</div></div><button class="chip-sel" style="margin:0" onclick="manualDissolve(${i})">✕</button></div>`).join('');
     const paired=new Set(manualPairs.flat()),pool=selectedIds.filter(id=>!paired.has(id));
     h+=`<p class="muted" style="margin-top:8px">Toca dos jugadores para emparejarlos:</p>`;
     h+=pool.length?pool.map(id=>`<button type="button" class="chip-sel${manualPending===id?' on':''}" onclick="manualPick('${id}')">${esc(idName(id))}</button>`).join(''):`<p class="muted">✅ Todos emparejados.</p>`;
@@ -964,7 +987,18 @@ function renderRondas(){
     });
   });
   h+=`<button class="btn wa" onclick="shareFixture()">📤 Compartir fixture y resultados</button>`;
+  if(!current.closed&&Object.keys(current.scores||{}).length===0)
+    h+=`<button class="btn danger" onclick="undoTournament()">↩️ Deshacer torneo (me equivoqué al armarlo)</button>`;
   c.innerHTML=h;
+}
+function undoTournament(){
+  if(Object.keys(current.scores||{}).length>0){toast('Ya hay resultados; usa 🗑️ para enviarlo a la papelera');return;}
+  modalConfirm('¿Deshacer este torneo?\nComo no has cargado ningún resultado, se elimina y vuelves a armar las parejas.',()=>{
+    const id=current.id;logEvent('torneo:deshecho',id+' '+(current.name||''));
+    purgeTournament(id); // borrado real: nunca se jugó, no va a la papelera
+    renderNew(); // conserva jugadores y modo para re-armar
+    toast('Torneo deshecho — ármalo de nuevo');
+  });
 }
 function setScore(ri,mi,team,val){
   if(current.closed)return;
@@ -1389,7 +1423,7 @@ function doClearLog(){modalConfirm('¿Borrar el registro de diagnóstico?',()=>{
 migrate();
 cloudConnect();
 purgeOldTrash();
-logEvent('app:abierta','v13');
+logEvent('app:abierta','v14');
 goHome();
 if('serviceWorker'in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
