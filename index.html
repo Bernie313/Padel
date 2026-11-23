@@ -132,7 +132,7 @@
     <div class="modal-msg" id="modalMsg"></div>
     <input id="modalInput" style="display:none" />
     <div class="row">
-      <button class="btn secondary" onclick="modalCancel()">Cancelar</button>
+      <button class="btn secondary" id="modalCancelBtn" onclick="modalCancel()">Cancelar</button>
       <button class="btn" id="modalOk">Aceptar</button>
     </div>
   </div>
@@ -306,7 +306,7 @@ function migrate(){
 /* ============ RANKING (estilo FIP, por posición) ============ */
 const POS_POINTS=[100,85,72,60,50,42,35,28,22,17,13,10]; // 1º..12º
 function posPoints(pos){return pos>=1&&pos<=POS_POINTS.length?POS_POINTS[pos-1]:5;}
-function isComplete(t){return t.schedule.length>0 && t.schedule.every(rd=>rd.matches.every(m=>m.scoreA!=null&&m.scoreB!=null));}
+function isComplete(t){return !!t.schedule && t.schedule.length>0 && t.schedule.every(rd=>rd.matches.every(m=>m.scoreA!=null&&m.scoreB!=null));}
 // Asigna posición y puntos a una tabla ya ordenada; empates exactos comparten posición y promedian puntos
 function assignPositions(st){
   const rv=s=>(s.rankVal!=null?s.rankVal:s.pts); // valor principal de orden (puntos o sets ganados)
@@ -373,7 +373,7 @@ function computeTeamStandings(t){
 function computeElo(){
   const K=24,BASE=1500,rating={},games={};
   const get=id=>(id in rating?rating[id]:(rating[id]=BASE,games[id]=0,BASE));
-  loadActive().filter(t=>t.playerIds).sort((a,b)=>a.createdAt-b.createdAt).forEach(t=>{
+  loadActive().filter(t=>t.playerIds&&t.schedule).sort((a,b)=>a.createdAt-b.createdAt).forEach(t=>{
     t.schedule.forEach(rd=>rd.matches.forEach(m=>{
       if(m.scoreA==null)return;
       const a1=t.playerIds[m.teamA[0]],a2=t.playerIds[m.teamA[1]],b1=t.playerIds[m.teamB[0]],b2=t.playerIds[m.teamB[1]];
@@ -468,6 +468,7 @@ function computeRanking(){
   const roster=loadRoster(),stats={};
   roster.forEach(p=>stats[p.id]={id:p.id,name:p.name,pts:0,tournaments:0,titles:0,amer:0,bestPos:99,results:[]});
   loadActive().slice().reverse().forEach(t=>{ // del más viejo al más nuevo
+    if(t.type==='escalera')return; // la escalera tiene su propia tabla
     if(!isComplete(t)||!t.playerIds)return;
     if(t.mode==='pairs'&&(t.teamsFlat||t.teams)){
       const nTeams=getTeams(t).length;
@@ -557,8 +558,9 @@ function loadLog(){try{return JSON.parse(localStorage.getItem(LOG_KEY)||'[]');}c
 function clearLog(){localStorage.removeItem(LOG_KEY);}
 
 function cloudRefresh(){
-  // Mantener 'current' al día aunque no re-dibujemos (evita guardar sobre datos viejos)
+  // Mantener 'current'/'currentEsc' al día aunque no re-dibujemos (evita guardar sobre datos viejos)
   if(screen==='tournament'&&current){const t0=loadAll().find(x=>x.id===current.id);if(t0)current=t0;}
+  if(screen==='escalera'&&currentEsc){const e0=loadAll().find(x=>x.id===currentEsc.id);if(e0)currentEsc=e0;}
   if(document.activeElement&&document.activeElement.tagName==='INPUT')return; // no interrumpir si está escribiendo
   if(screen==='home')renderHome();
   else if(screen==='ranking')renderRanking();
@@ -566,6 +568,7 @@ function cloudRefresh(){
   else if(screen==='trash')renderTrash();
   else if(screen==='sync')renderSync();
   else if(screen==='tournament'&&current){const t=loadAll().find(x=>x.id===current.id);if(t){current=t;renderTournament();}}
+  else if(screen==='escalera'&&currentEsc)renderEscalera();
 }
 function cloudListen(){
   cloudUnsub.forEach(u=>{try{u();}catch(e){}});cloudUnsub=[];
@@ -635,40 +638,67 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 function esc(s){return(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 
 /* ============ VENTANA MODAL (confirmar / pedir texto) ============ */
+function modalResetBtns(){
+  document.getElementById('modalOk').textContent='Aceptar';
+  const cb=document.getElementById('modalCancelBtn');cb.textContent='Cancelar';cb.onclick=modalCancel;cb.style.display='';
+}
 function modalConfirm(msg,cb){
-  const m=document.getElementById('modal');
+  const m=document.getElementById('modal');modalResetBtns();
   document.getElementById('modalMsg').textContent=msg;
   document.getElementById('modalInput').style.display='none';
   document.getElementById('modalOk').onclick=()=>{m.style.display='none';cb(true);};
   m.style.display='flex';
 }
 function modalPrompt(msg,val,cb){
-  const m=document.getElementById('modal');
+  const m=document.getElementById('modal');modalResetBtns();
   document.getElementById('modalMsg').textContent=msg;
   const inp=document.getElementById('modalInput');
   inp.style.display='block';inp.value=val||'';
   document.getElementById('modalOk').onclick=()=>{m.style.display='none';cb(inp.value);};
   m.style.display='flex';setTimeout(()=>inp.focus(),50);
 }
+// Dos opciones (devuelve 0 o 1). Sin botón de cancelar: hay que elegir.
+function modalChoose(msg,labelA,labelB,cb){
+  const m=document.getElementById('modal');modalResetBtns();
+  document.getElementById('modalMsg').textContent=msg;
+  document.getElementById('modalInput').style.display='none';
+  const ok=document.getElementById('modalOk'),cancel=document.getElementById('modalCancelBtn');
+  ok.textContent=labelA;cancel.textContent=labelB;cancel.style.display='';
+  ok.onclick=()=>{m.style.display='none';modalResetBtns();cb(0);};
+  cancel.onclick=()=>{m.style.display='none';modalResetBtns();cb(1);};
+  m.style.display='flex';
+}
 function modalCancel(){document.getElementById('modal').style.display='none';}
 
-function goHome(){current=null;backBtn.style.display='none';titleEl.textContent='Americano Pádel';renderHome();}
+function goHome(){current=null;currentEsc=null;backBtn.style.display='none';titleEl.textContent='Americano Pádel';renderHome();}
 
 /* ============ VISTA: INICIO ============ */
 function renderHome(){
   screen='home';
-  const list=loadActive(),trash=loadTrash();
+  const list=loadTournaments(),escs=loadEscaleras(),trash=loadTrash();
   let html=`<button class="btn" onclick="renderNew()">➕ Nuevo torneo</button>`;
-  if(list.length||loadRoster().length){
+  if(list.length||escs.length||loadRoster().length){
     html+=`<div class="row" style="margin-top:10px">
       <button class="btn secondary" onclick="renderRanking()">🏅 Ranking</button>
       <button class="btn secondary" onclick="renderRoster()">👥 Jugadores</button></div>`;
   }
   html+=`<button class="btn secondary" onclick="renderSync()" style="margin-top:10px">☁️ ${cloudOn?'Sincronizado · '+esc(groupCode()):'Sincronizar entre teléfonos'}</button>`;
   if(trash.length)html+=`<button class="btn secondary" onclick="renderTrash()" style="margin-top:10px">🗑️ Papelera (${trash.length})</button>`;
-  if(list.length===0){
+  if(escs.length){
+    html+=`<h2>🪜 Escaleras</h2><div class="card tlist">`;
+    escs.forEach((e,i)=>{
+      const wk=(e.currentWeek||0)+1,estado=e.finished?'🏆 finalizada':'Semana '+Math.min(wk,e.numWeeks)+'/'+e.numWeeks;
+      html+=`<div class="titem" onclick="openEscalera('${e.id}')" ${i<escs.length-1?'style="border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:12px"':''}>
+        <span class="ic">🪜</span>
+        <div class="meta"><div class="nm">${esc(e.name)}</div>
+        <div class="sub">${e.players.length} jug. · ${estado} · ${new Date(e.createdAt).toLocaleDateString('es')}</div></div>
+        <button class="chip-sel" style="margin:0" onclick="event.stopPropagation();deleteTournamentConfirm('${e.id}')">🗑️</button></div>`;
+    });
+    html+=`</div>`;
+  }
+  if(list.length===0&&escs.length===0){
     html+=`<div class="empty"><div class="big">🎾</div><div>Todavía no tienes torneos.</div><div class="muted">Crea el primero arriba.</div></div>`;
-  }else{
+  }else if(list.length){
     html+=`<h2>Tus torneos</h2><div class="card tlist">`;
     list.forEach((t,i)=>{
       const done=t.schedule.flatMap(r=>r.matches).filter(m=>m.scoreA!=null).length;
@@ -692,6 +722,7 @@ function lastPoints(){return +localStorage.getItem('padel_last_points')||0;}
 function rememberPoints(p){localStorage.setItem('padel_last_points',String(p));}
 function defaultNewPoints(n){return lastPoints()||(newMode==='pairs'?24:defaultPoints(n));}
 function maxPlayers(){return newMode==='pairs'?16:12;}
+function escMsg(n){return 'Seleccionados: <b>'+n+'</b>'+(n<12?' — faltan '+(12-n):n>12?' — sobran '+(n-12):' ✅');}
 function captureNewForm(){
   const nEl=document.getElementById('tName');if(nEl&&nEl.value)newName=nEl.value;
   // Solo pisar los puntos si el campo tiene un número válido (si está vacío,
@@ -709,10 +740,12 @@ function renderNew(){
   <div class="card">
     <div class="tabs" style="margin-bottom:14px">
       <button class="${newMode==='americano'?'active':''}" onclick="setMode('americano')">Americano</button>
-      <button class="${newMode==='pairs'?'active':''}" onclick="setMode('pairs')">Parejas fijas</button>
+      <button class="${newMode==='pairs'?'active':''}" onclick="setMode('pairs')">Parejas</button>
+      <button class="${newMode==='escalera'?'active':''}" onclick="setMode('escalera')">🪜 Escalera</button>
     </div>
-    <label>Nombre del torneo</label>
+    <label>Nombre ${newMode==='escalera'?'de la escalera':'del torneo'}</label>
     <input id="tName" value="${esc(newName||defName)}"/>
+    ${newMode==='escalera'?`<p class="muted" style="margin:10px 0 0">🪜 <b>Liga de 4 semanas</b> con 12 jugadores fijos en 3 canchas. Cada semana: 3 sets por cancha (todos con todos), suben/bajan de cancha, y gana quien más juegos acumule. El sorteo de la 1ª semana es manual.</p>`:`
     <label>Tipo de marcador</label>
     <div class="tabs" style="margin-bottom:4px">
       <button class="${newScoring==='points'?'active':''}" onclick="setScoring('points')">Puntos (suma)</button>
@@ -723,10 +756,10 @@ function renderNew(){
       <div><label>Rondas</label><input id="tRounds" type="number" inputmode="numeric" value="" ${newMode==='pairs'?'readonly':''}/></div>
     </div>
     ${newScoring==='games'?'<p class="muted" style="margin:6px 0 0">1 set por partido — anotas los juegos de cada equipo (ej. 6-4). Gana quien gana más sets.</p>':''}
-    <p class="muted" id="hint" style="margin-top:10px"></p>
+    <p class="muted" id="hint" style="margin-top:10px"></p>`}
   </div>
   <div class="card">
-    <h2 style="margin-top:0">Jugadores${newMode==='pairs'?' (número par)':''}</h2>
+    <h2 style="margin-top:0">Jugadores${newMode==='pairs'?' (número par)':newMode==='escalera'?' (exactamente 12)':''}</h2>
     <p class="muted" id="selCount"></p>
     <div id="chips"></div>
     <label>Agregar jugador nuevo</label>
@@ -743,7 +776,7 @@ function renderNew(){
       <button class="${pairMethod==='manual'?'active':''}" onclick="setPairMethod('manual')">Manual</button>
     </div>
     <div id="pairsBody"></div></div>`:''}
-  <button class="btn" onclick="doGenerate()">⚙️ ${newMode==='pairs'?'Generar torneo de parejas':'Generar fixture'}</button>`;
+  <button class="btn" onclick="doGenerate()">${newMode==='escalera'?'🪜 Crear Escalera':newMode==='pairs'?'⚙️ Generar torneo de parejas':'⚙️ Generar fixture'}</button>`;
   renderChips();
   if(newMode==='pairs')renderPairsSection();
 }
@@ -769,7 +802,9 @@ function toggleSel(id){
 function updateSelUI(){
   const n=selectedIds.length, scEl=document.getElementById('selCount');
   const pEl=document.getElementById('tPoints'),rEl=document.getElementById('tRounds'),hEl=document.getElementById('hint');
-  if(newMode==='pairs'){
+  if(newMode==='escalera'){
+    if(scEl)scEl.innerHTML=escMsg(n);
+  }else if(newMode==='pairs'){
     if(scEl)scEl.innerHTML=`Seleccionados: <b>${n}</b>`+(n<4?' — mínimo 4':n%2!==0?' — debe ser par':'');
     const teams=Math.floor(n/2),rounds=teams%2===0?teams-1:teams;
     if(rEl)rEl.value=(n>=4&&n%2===0)?rounds:'';
@@ -867,6 +902,7 @@ function renderPairsSection(){
 
 function doGenerate(){
   captureNewForm();
+  if(newMode==='escalera')return doGenerateEscalera();
   if(newMode==='pairs')return doGeneratePairs();
   const n=selectedIds.length;
   if(n<4||n>12){toast('Selecciona entre 4 y 12 jugadores');return;}
@@ -1419,11 +1455,301 @@ function shareLog(){
 }
 function doClearLog(){modalConfirm('¿Borrar el registro de diagnóstico?',()=>{clearLog();renderLog();});}
 
+/* ============ MODO ESCALERA (liga de 4 semanas) ============ */
+/* Modelo PLANO (seguro para Firestore, que no admite listas dentro de listas):
+   cada semana tiene assign[jugador]=cancha(0..2, -1 sin asignar), subs{idx:nombre},
+   closed, y rankPos[jugador]=puesto en su cancha (0..3) al cerrar. Los marcadores
+   van en esc.scores["w{w}c{c}s{s}"]={a,b} (mapa plano, se sincroniza set por set). */
+const ESC_WEEKS=4;
+let currentEsc=null, escWeekView=0, escTab='week';
+function isEscalera(t){return !!t&&t.type==='escalera';}
+function loadEscaleras(){return loadActive().filter(isEscalera).sort((a,b)=>b.createdAt-a.createdAt);}
+function loadTournaments(){return loadActive().filter(t=>!isEscalera(t));}
+// canchas (3 listas de índices) a partir de assign
+function wkCourts(wk){const c=[[],[],[]];(wk.assign||[]).forEach((ci,pi)=>{if(ci>=0&&ci<3)c[ci].push(pi);});return c;}
+function courtFull(wk){return wkCourts(wk).every(c=>c.length===4);}
+// orden por cancha según rankPos (1º..4º)
+function wkRanked(wk){if(!wk.rankPos)return null;return wkCourts(wk).map(court=>court.slice().sort((a,b)=>wk.rankPos[a]-wk.rankPos[b]));}
+// Los 3 sets de una cancha de 4: [a,b,c,d] -> (a,b)v(c,d),(a,c)v(b,d),(a,d)v(b,c)
+function courtSets(court){const[a,b,c,d]=court;return[{teamA:[a,b],teamB:[c,d]},{teamA:[a,c],teamB:[b,d]},{teamA:[a,d],teamB:[b,c]}];}
+function escKey(w,c,s){return 'w'+w+'c'+c+'s'+s;}
+function escGetScore(esc,w,c,s){return (esc.scores||{})[escKey(w,c,s)];}
+function escPlayerName(esc,w,pi){const sub=(esc.weeks[w]&&esc.weeks[w].subs||{})[pi];return sub?esc.players[pi]+' ('+sub+')':esc.players[pi];}
+// Juegos por jugador (índice) en una semana
+function weekGames(esc,w){
+  const wk=esc.weeks[w],g={};if(!wk)return g;
+  wkCourts(wk).forEach((court,ci)=>{
+    if(court.length<4)return;
+    courtSets(court).forEach((set,si)=>{
+      const sc=escGetScore(esc,w,ci,si);if(!sc||sc.a==null||sc.b==null)return;
+      set.teamA.forEach(pi=>{g[pi]=g[pi]||{g:0,l:0};g[pi].g+=sc.a;g[pi].l+=sc.b;});
+      set.teamB.forEach(pi=>{g[pi]=g[pi]||{g:0,l:0};g[pi].g+=sc.b;g[pi].l+=sc.a;});
+    });
+  });
+  return g;
+}
+function courtStandings(esc,w,ci){
+  const court=wkCourts(esc.weeks[w])[ci]||[],g=weekGames(esc,w);
+  return court.map(pi=>{const x=g[pi]||{g:0,l:0};return{pi,games:x.g,dif:x.g-x.l};}).sort((a,b)=>b.games-a.games||b.dif-a.dif);
+}
+function weekFilled(esc,w){
+  const wk=esc.weeks[w];if(!wk||!courtFull(wk))return 0;
+  let n=0;for(let ci=0;ci<3;ci++)for(let si=0;si<3;si++){const sc=escGetScore(esc,w,ci,si);if(sc&&sc.a!=null&&sc.b!=null)n++;}return n;
+}
+function weekComplete(esc,w){const wk=esc.weeks[w];return !!wk&&courtFull(wk)&&weekFilled(esc,w)===9;}
+function escFate(ci,isTop){
+  if(ci===0)return isTop?'Permanece en C1':'⬇️ Baja a C2';
+  if(ci===1)return isTop?'⬆️ Sube a C1':'⬇️ Baja a C3';
+  return isTop?'⬆️ Sube a C2':'Permanece en C3';
+}
+// Tabla acumulada de la temporada
+function escStandings(esc){
+  const s=esc.players.map((nm,i)=>({pi:i,name:nm,games:0,lost:0,weeksC1:0,ascensos:0}));
+  const byPi=pi=>s.find(z=>z.pi===pi);
+  esc.weeks.forEach((wk,w)=>{
+    if(!wk)return;
+    const wg=weekGames(esc,w);
+    s.forEach(r=>{const x=wg[r.pi];if(x){r.games+=x.g;r.lost+=x.l;}});
+    if(wk.closed){
+      wkCourts(wk)[0].forEach(pi=>{const r=byPi(pi);if(r)r.weeksC1++;});
+      const rk=wkRanked(wk)||[[],[],[]];
+      [1,2].forEach(ci=>rk[ci].slice(0,2).forEach(pi=>{const r=byPi(pi);if(r)r.ascensos++;}));
+    }
+  });
+  s.forEach(r=>r.dif=r.games-r.lost);
+  s.sort((a,b)=>b.games-a.games||b.weeksC1-a.weeksC1||b.ascensos-a.ascensos||a.name.localeCompare(b.name));
+  return s;
+}
+
+/* ---- Creación ---- */
+function doGenerateEscalera(){
+  const n=selectedIds.length;
+  if(n!==12){toast('La Escalera necesita exactamente 12 jugadores');return;}
+  const roster=loadRoster();
+  const chosen=selectedIds.map(id=>roster.find(p=>p.id===id)).filter(Boolean);
+  const players=chosen.map(p=>p.name),playerIds=chosen.map(p=>p.id);
+  const name=(newName||'').trim()||('Escalera '+new Date().toLocaleDateString('es'));
+  const esc={id:'e'+Date.now(),type:'escalera',name,createdAt:Date.now(),players,playerIds,
+    numWeeks:ESC_WEEKS,currentWeek:0,finished:false,
+    weeks:[{assign:new Array(12).fill(-1),subs:{},closed:false}],scores:{}};
+  saveTournament(esc);logEvent('escalera:creada',esc.id+' 12j');openEscalera(esc.id);
+}
+function openEscalera(id){
+  currentEsc=loadAll().find(t=>t.id===id);if(!isEscalera(currentEsc))return goHome();
+  current=null;backBtn.style.display='block';titleEl.textContent=currentEsc.name;
+  escWeekView=Math.min(currentEsc.currentWeek||0,currentEsc.weeks.length-1);escTab='week';renderEscalera();
+}
+
+/* ---- Sincronización ---- */
+function cloudPushScoreKey(tid,key,a,b){
+  if(cloudOn&&db)try{const o={};o[key]={a:(a==null?null:a),b:(b==null?null:b)};
+    groupRef().collection('tournaments').doc(tid).set({scores:o},{merge:true}).catch(e=>console.warn(e));}catch(e){console.warn(e);}
+}
+function escPushStruct(){
+  if(cloudOn&&db)try{groupRef().collection('tournaments').doc(currentEsc.id)
+    .set({weeks:currentEsc.weeks,currentWeek:currentEsc.currentWeek,finished:!!currentEsc.finished},{merge:true}).catch(e=>console.warn(e));}catch(e){console.warn(e);}
+}
+function escSetScore(w,ci,si,team,val){
+  const wk=currentEsc.weeks[w];if(!wk||wk.closed)return;
+  const k=escKey(w,ci,si);if(!currentEsc.scores)currentEsc.scores={};
+  const cur=currentEsc.scores[k]||{a:null,b:null};let a=cur.a,b=cur.b;
+  if(val===''){if(team==='A')a=null;else b=null;}
+  else{let v=Math.max(0,Math.min(30,parseInt(val)||0));if(team==='A')a=v;else b=v;}
+  if(a==null&&b==null)delete currentEsc.scores[k];else currentEsc.scores[k]={a,b};
+  saveTournamentLocal(currentEsc);
+  cloudPushScoreKey(currentEsc.id,k,a,b);
+  logEvent('escalera:set',currentEsc.id+' '+k+' '+(a==null&&b==null?'borrado':a+'-'+b));
+  renderEscalera();
+}
+
+/* ---- Sorteo manual (semana 1) ---- */
+function escAssign(pi,ci){
+  const wk=currentEsc.weeks[escWeekView];if(!wk.assign)wk.assign=new Array(12).fill(-1);
+  if(wkCourts(wk)[ci].length>=4)return;
+  wk.assign[pi]=ci;saveTournamentLocal(currentEsc);renderEscalera();
+}
+function escUnassign(pi){
+  const wk=currentEsc.weeks[escWeekView];wk.assign[pi]=-1;saveTournamentLocal(currentEsc);renderEscalera();
+}
+function escConfirmDraw(){
+  const wk=currentEsc.weeks[escWeekView];
+  if(!courtFull(wk)){toast('Cada cancha debe tener 4 jugadores');return;}
+  saveTournamentLocal(currentEsc);escPushStruct();
+  logEvent('escalera:sorteo',currentEsc.id+' S'+(escWeekView+1));renderEscalera();
+}
+
+/* ---- Suplentes ---- */
+function escSetSub(pi,name){
+  const wk=currentEsc.weeks[escWeekView];if(!wk.subs)wk.subs={};
+  name=(name||'').trim();if(name)wk.subs[pi]=name;else delete wk.subs[pi];
+  saveTournamentLocal(currentEsc);escPushStruct();renderEscalera();
+}
+
+/* ---- Cerrar semana (ascensos/descensos) ---- */
+function escCloseWeek(){
+  const w=escWeekView,esc=currentEsc;
+  if(!weekComplete(esc,w)){toast('Faltan sets por cargar ('+weekFilled(esc,w)+'/9)');return;}
+  const orders=[],ties=[];
+  for(let ci=0;ci<3;ci++){const st=courtStandings(esc,w,ci);orders[ci]=st.map(x=>x.pi);
+    if(st[1].games===st[2].games&&st[1].dif===st[2].dif)ties.push(ci);}
+  const finalize=()=>{
+    const wk=esc.weeks[w],rankPos=new Array(12).fill(0);
+    orders.forEach(ord=>ord.forEach((pi,pos)=>rankPos[pi]=pos));
+    wk.rankPos=rankPos;wk.closed=true;wk.closedAt=Date.now();
+    if(w+1<esc.numWeeks){
+      const top=ci=>orders[ci].slice(0,2),bot=ci=>orders[ci].slice(2,4);
+      const nc1=top(0).concat(top(1)),nc2=bot(0).concat(top(2)),nc3=bot(1).concat(bot(2));
+      const assign=new Array(12).fill(-1);
+      nc1.forEach(pi=>assign[pi]=0);nc2.forEach(pi=>assign[pi]=1);nc3.forEach(pi=>assign[pi]=2);
+      esc.weeks[w+1]={assign,subs:{},closed:false};esc.currentWeek=w+1;
+    }else esc.finished=true;
+    saveTournamentLocal(esc);escPushStruct();
+    logEvent('escalera:cierre',esc.id+' S'+(w+1)+(esc.finished?' FIN':''));
+    escWeekView=Math.min(esc.currentWeek||w,esc.weeks.length-1);renderEscalera();
+    toast(esc.finished?'¡Escalera finalizada! 🏆':'Semana cerrada — armada la siguiente 🪜');
+  };
+  if(!ties.length)return finalize();
+  let i=0;const askNext=()=>{
+    if(i>=ties.length)return finalize();
+    const ci=ties[i],st=courtStandings(esc,w,ci);
+    modalChoose('Empate en Cancha '+(ci+1)+' por el 2º puesto ('+st[1].games+' juegos). ¿Quién sube al top 2?',
+      esc.players[st[1].pi],esc.players[st[2].pi],choice=>{
+        if(choice===1){const r=orders[ci];const t=r[1];r[1]=r[2];r[2]=t;}
+        i++;askNext();
+      });
+  };askNext();
+}
+function escCloseConfirm(){
+  modalConfirm('¿Cerrar la semana '+(escWeekView+1)+'?\nSe calculan ascensos/descensos y se arma la siguiente. Quedará bloqueada.',escCloseWeek);
+}
+
+/* ---- Vistas ---- */
+function renderEscalera(){
+  screen='escalera';const esc=currentEsc;const nW=esc.weeks.length;
+  let h=`<div class="tabs" style="margin-bottom:12px;overflow-x:auto">`;
+  for(let w=0;w<esc.numWeeks;w++){
+    const exists=w<nW,cls=(escTab==='week'&&escWeekView===w)?'active':'';
+    h+=`<button class="${cls}" ${exists?'':'disabled style="opacity:.35"'} onclick="${exists?`escGo(${w})`:''}">S${w+1}${esc.weeks[w]&&esc.weeks[w].closed?' ✅':''}</button>`;
+  }
+  h+=`<button class="${escTab==='table'?'active':''}" onclick="escGoTable()">🏆 Tabla</button></div><div id="escBody"></div>`;
+  app.innerHTML=h;
+  document.getElementById('escBody').innerHTML = escTab==='table' ? escTableHtml(esc) : escWeekHtml(esc);
+}
+function escGo(w){escTab='week';escWeekView=w;renderEscalera();}
+function escGoTable(){escTab='table';renderEscalera();}
+function escWeekHtml(esc){
+  const w=escWeekView,wk=esc.weeks[w];
+  if(!wk)return '<p class="muted">Semana no disponible.</p>';
+  if(!courtFull(wk) && !wk.closed) return escDrawHtml(esc,wk);
+  const courts=wkCourts(wk),ranked=wkRanked(wk);
+  let h='';
+  if(wk.closed)h+=`<div class="lockbar">🔒 Semana ${w+1} cerrada — resultados bloqueados</div>`;
+  h+=escSubsHtml(esc,wk);
+  courts.forEach((court,ci)=>{
+    const st=courtStandings(esc,w,ci);
+    const order = (wk.closed&&ranked) ? ranked[ci].map(pi=>st.find(x=>x.pi===pi)||{pi,games:0,dif:0}) : st;
+    h+=`<div class="round-h"><span class="num">${ci+1}</span><span class="ttl">Cancha ${ci+1}</span></div>`;
+    h+=`<div class="card" style="padding:0;overflow:hidden"><table class="tbl-compact"><tbody>`;
+    order.forEach((r,pos)=>{const isTop=pos<2;
+      h+=`<tr class="${pos===0?'top1':''}"><td class="n">${pos+1}</td><td class="nm-cell">${esc2(escPlayerName(esc,w,r.pi))}</td>
+        <td class="pts" style="text-align:right">${r.games}</td>
+        <td style="text-align:right;font-size:10px;color:${isTop?'var(--green-l)':'var(--muted)'}">${escFate(ci,isTop)}</td></tr>`;});
+    h+=`</tbody></table></div>`;
+    courtSets(court).forEach((set,si)=>{
+      const sc=escGetScore(esc,w,ci,si)||{};
+      const aw=sc.a!=null&&sc.b!=null&&sc.a>sc.b, bw=sc.a!=null&&sc.b!=null&&sc.b>sc.a;
+      h+=`<div class="match"><div class="court">Set ${si+1}</div>
+        <div class="team ${aw?'win':''}"><span class="names">${esc2(escPlayerName(esc,w,set.teamA[0]))} & ${esc2(escPlayerName(esc,w,set.teamA[1]))}</span>
+          <span class="sc">${escCellHtml(esc,w,ci,si,'A',wk.closed)}</span></div>
+        <div class="vs">VS · juegos del set</div>
+        <div class="team ${bw?'win':''}"><span class="names">${esc2(escPlayerName(esc,w,set.teamB[0]))} & ${esc2(escPlayerName(esc,w,set.teamB[1]))}</span>
+          <span class="sc">${escCellHtml(esc,w,ci,si,'B',wk.closed)}</span></div></div>`;
+    });
+  });
+  if(!wk.closed){
+    const filled=weekFilled(esc,w);
+    h+= filled===9
+      ? `<button class="btn" style="background:var(--card2);border:1px solid var(--gold);color:var(--gold)" onclick="escCloseConfirm()">🔒 Cerrar semana ${w+1} y armar la siguiente</button>`
+      : `<p class="muted center">Faltan ${9-filled} set(s) por cargar para poder cerrar la semana.</p>`;
+  }
+  h+=`<button class="btn wa" onclick="escShare()">📤 Compartir resultados</button>`;
+  return h;
+}
+function escCellHtml(esc,w,ci,si,team,closed){
+  const sc=escGetScore(esc,w,ci,si)||{};const v=team==='A'?sc.a:sc.b;
+  if(closed)return `<span class="scval">${v??'–'}</span>`;
+  return `<input type="number" inputmode="numeric" value="${v??''}" placeholder="–" onchange="escSetScore(${w},${ci},${si},'${team}',this.value)"/>`;
+}
+function escDrawHtml(esc,wk){
+  const courts=wkCourts(wk);
+  const pool=esc.players.map((n,i)=>i).filter(i=>(wk.assign||[])[i]==null||wk.assign[i]<0);
+  let h=`<div class="lockbar" style="border-color:var(--accent);color:var(--accent)">🎲 Sorteo manual — asigna los 12 a su cancha (4 por cancha)</div>`;
+  courts.forEach((court,ci)=>{
+    h+=`<div class="card" style="padding:12px;margin-bottom:10px"><b>Cancha ${ci+1}</b> <span class="muted">(${court.length}/4)</span><div style="margin-top:8px">`;
+    h+= court.length? court.map(pi=>`<button class="chip-sel on" style="margin:0 6px 6px 0" onclick="escUnassign(${pi})">${esc2(esc.players[pi])} ✕</button>`).join('') : '<span class="muted">vacía</span>';
+    h+=`</div></div>`;
+  });
+  if(pool.length){
+    h+=`<div class="card"><b>Por asignar (${pool.length})</b><div style="margin-top:8px">`;
+    pool.forEach(pi=>{
+      h+=`<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span style="flex:1">${esc2(esc.players[pi])}</span>`;
+      [0,1,2].forEach(ci=>{const full=courts[ci].length>=4;
+        h+=`<button class="chip-sel" style="margin:0;${full?'opacity:.3':''}" ${full?'disabled':''} onclick="escAssign(${pi},${ci})">C${ci+1}</button>`;});
+      h+=`</div>`;
+    });
+    h+=`</div>`;
+  }else h+=`<button class="btn" onclick="escConfirmDraw()">✅ Confirmar canchas y empezar</button>`;
+  return h;
+}
+function escSubsHtml(esc,wk){
+  if(wk.closed){const subs=Object.entries(wk.subs||{});if(!subs.length)return '';
+    return `<p class="muted center">Suplentes: ${subs.map(([pi,nm])=>esc2(esc.players[pi])+'→'+esc2(nm)).join(' · ')}</p>`;}
+  const subs=wk.subs||{},count=Object.keys(subs).length;
+  return `<details class="card" style="padding:10px"><summary style="cursor:pointer;color:var(--muted)">👤 Suplentes de la semana${count?' ('+count+')':''}</summary>
+    <p class="muted" style="margin:8px 0">Si alguien mandó suplente, anótalo aquí. Los juegos se le suman igual al titular.</p>
+    ${esc.players.map((nm,pi)=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="flex:1;font-size:13px">${esc2(nm)}</span>
+      <input style="max-width:150px" placeholder="suplente…" value="${esc2(subs[pi]||'')}" onchange="escSetSub(${pi},this.value)"/></div>`).join('')}
+  </details>`;
+}
+function escTableHtml(esc){
+  const st=escStandings(esc);
+  let h=`<div class="card" style="padding:0;overflow-x:auto"><table class="tbl-compact"><thead><tr>
+    <th class="n">#</th><th>Jugador</th><th style="text-align:right">Juegos</th>
+    <th style="text-align:center">Dif</th><th style="text-align:center">C1</th><th style="text-align:center">⬆️</th></tr></thead><tbody>`;
+  st.forEach((s,i)=>{const cls=i===0?'top1':i===1?'top2':i===2?'top3':'';
+    const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1);
+    h+=`<tr class="${cls}"><td class="n">${medal}</td><td class="nm-cell">${esc2(s.name)}</td>
+      <td class="pts" style="text-align:right">${s.games}</td>
+      <td class="dif" style="text-align:center">${s.dif>=0?'+':''}${s.dif}</td>
+      <td style="text-align:center">${s.weeksC1}</td><td style="text-align:center">${s.ascensos}</td></tr>`;});
+  h+=`</tbody></table></div>
+    <p class="muted center">Ganador = más <b>juegos</b> acumulados. Desempate: semanas en Cancha 1 (C1), luego ascensos (⬆️).<br>
+    ${esc.finished?'🏆 Escalera finalizada.':'Semana en curso: '+((esc.currentWeek||0)+1)+'/'+esc.numWeeks}</p>
+    <button class="btn wa" onclick="escShareTable()">📤 Compartir tabla</button>
+    <button class="btn danger" onclick="deleteTournamentConfirm('${esc.id}')">🗑️ Enviar a papelera</button>`;
+  return h;
+}
+function esc2(s){return esc(s);}
+function escShare(){
+  const e=currentEsc,w=escWeekView;let t=`🪜 *${e.name}* — Semana ${w+1}\n`;
+  wkCourts(e.weeks[w]).forEach((court,ci)=>{
+    t+=`\n*Cancha ${ci+1}*\n`;
+    courtStandings(e,w,ci).forEach((r,pos)=>{t+=`${pos+1}. ${e.players[r.pi]} — ${r.games} juegos\n`;});
+  });
+  share(t);
+}
+function escShareTable(){
+  const st=escStandings(currentEsc);let t=`🪜 *${currentEsc.name}* — Tabla general\n\n`;
+  st.forEach((s,i)=>{const m=i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}.`;
+    t+=`${m} ${s.name} — *${s.games}* juegos (C1:${s.weeksC1} ⬆️${s.ascensos})\n`;});
+  share(t);
+}
+
 /* ============ ARRANQUE ============ */
 migrate();
 cloudConnect();
 purgeOldTrash();
-logEvent('app:abierta','v14');
+logEvent('app:abierta','v15');
 goHome();
 if('serviceWorker'in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
