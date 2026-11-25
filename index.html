@@ -735,7 +735,7 @@ function setScoring(s){captureNewForm();newScoring=s;renderNew();}
 function renderNew(){
   screen='new';pointsEdited=false;
   backBtn.style.display='block';titleEl.textContent='Nuevo torneo';
-  const defName=(newMode==='pairs'?'Parejas ':'Americano ')+new Date().toLocaleDateString('es');
+  const defName=(newMode==='pairs'?'Parejas ':newMode==='escalera'?'Escalera ':'Americano ')+new Date().toLocaleDateString('es');
   app.innerHTML=`
   <div class="card">
     <div class="tabs" style="margin-bottom:14px">
@@ -1566,16 +1566,24 @@ function escSetScore(w,ci,si,team,val){
 function escAssign(pi,ci){
   const wk=currentEsc.weeks[escWeekView];if(!wk.assign)wk.assign=new Array(12).fill(-1);
   if(wkCourts(wk)[ci].length>=4)return;
-  wk.assign[pi]=ci;saveTournamentLocal(currentEsc);renderEscalera();
+  wk.assign[pi]=ci;saveTournamentLocal(currentEsc);escPushStruct();renderEscalera();
 }
 function escUnassign(pi){
-  const wk=currentEsc.weeks[escWeekView];wk.assign[pi]=-1;saveTournamentLocal(currentEsc);renderEscalera();
+  const wk=currentEsc.weeks[escWeekView];wk.assign[pi]=-1;saveTournamentLocal(currentEsc);escPushStruct();renderEscalera();
 }
 function escConfirmDraw(){
   const wk=currentEsc.weeks[escWeekView];
   if(!courtFull(wk)){toast('Cada cancha debe tener 4 jugadores');return;}
-  saveTournamentLocal(currentEsc);escPushStruct();
+  wk.ready=true;saveTournamentLocal(currentEsc);escPushStruct();
   logEvent('escalera:sorteo',currentEsc.id+' S'+(escWeekView+1));renderEscalera();
+}
+// Volver al sorteo (solo si no hay puntajes cargados en la semana)
+function escRedraw(){
+  const w=escWeekView,wk=currentEsc.weeks[w];
+  if(weekFilled(currentEsc,w)>0){toast('Ya hay sets cargados; no se puede rehacer el sorteo');return;}
+  modalConfirm('¿Rehacer el sorteo de la semana '+(w+1)+'?',()=>{
+    wk.ready=false;saveTournamentLocal(currentEsc);escPushStruct();renderEscalera();
+  });
 }
 
 /* ---- Suplentes ---- */
@@ -1601,7 +1609,7 @@ function escCloseWeek(){
       const nc1=top(0).concat(top(1)),nc2=bot(0).concat(top(2)),nc3=bot(1).concat(bot(2));
       const assign=new Array(12).fill(-1);
       nc1.forEach(pi=>assign[pi]=0);nc2.forEach(pi=>assign[pi]=1);nc3.forEach(pi=>assign[pi]=2);
-      esc.weeks[w+1]={assign,subs:{},closed:false};esc.currentWeek=w+1;
+      esc.weeks[w+1]={assign,subs:{},closed:false,ready:true};esc.currentWeek=w+1;
     }else esc.finished=true;
     saveTournamentLocal(esc);escPushStruct();
     logEvent('escalera:cierre',esc.id+' S'+(w+1)+(esc.finished?' FIN':''));
@@ -1640,10 +1648,13 @@ function escGoTable(){escTab='table';renderEscalera();}
 function escWeekHtml(esc){
   const w=escWeekView,wk=esc.weeks[w];
   if(!wk)return '<p class="muted">Semana no disponible.</p>';
-  if(!courtFull(wk) && !wk.closed) return escDrawHtml(esc,wk);
+  // Semana 1 anterior a v16 (sin 'ready' pero con canchas completas) se trata como lista.
+  const ready = wk.ready || (courtFull(wk) && (weekFilled(esc,w)>0 || wk.closed));
+  if(!ready && !wk.closed) return escDrawHtml(esc,wk);
   const courts=wkCourts(wk),ranked=wkRanked(wk);
   let h='';
   if(wk.closed)h+=`<div class="lockbar">🔒 Semana ${w+1} cerrada — resultados bloqueados</div>`;
+  else if(weekFilled(esc,w)===0)h+=`<button class="btn secondary" style="margin-top:0;margin-bottom:12px" onclick="escRedraw()">🎲 Rehacer sorteo</button>`;
   h+=escSubsHtml(esc,wk);
   courts.forEach((court,ci)=>{
     const st=courtStandings(esc,w,ci);
@@ -1749,7 +1760,7 @@ function escShareTable(){
 migrate();
 cloudConnect();
 purgeOldTrash();
-logEvent('app:abierta','v15');
+logEvent('app:abierta','v16');
 goHome();
 if('serviceWorker'in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
