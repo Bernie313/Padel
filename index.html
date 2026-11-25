@@ -1761,12 +1761,21 @@ function escTableHtml(esc){
   return h;
 }
 function esc2(s){return esc(s);}
+function escArrow(ci,isTop){
+  if(ci===0)return isTop?'=':'⬇️';   // Cancha 1: top se mantiene, resto baja
+  if(ci===1)return isTop?'⬆️':'⬇️';  // Cancha 2: top sube, resto baja
+  return isTop?'⬆️':'=';             // Cancha 3: top sube, resto se mantiene
+}
 function escShare(){
-  const e=currentEsc,w=escWeekView;let t=`🪜 *${e.name}* — Semana ${w+1}\n`;
-  wkCourts(e.weeks[w]).forEach((court,ci)=>{
+  const e=currentEsc,w=escWeekView,wk=e.weeks[w],ranked=wkRanked(wk);
+  let t=`🪜 *${e.name}* — Semana ${w+1}\n`;
+  wkCourts(wk).forEach((court,ci)=>{
+    const st=courtStandings(e,w,ci);
+    const order=(wk.closed&&ranked)?ranked[ci].map(pi=>st.find(x=>x.pi===pi)||{pi,games:0}):st;
     t+=`\n*Cancha ${ci+1}*\n`;
-    courtStandings(e,w,ci).forEach((r,pos)=>{t+=`${pos+1}. ${e.players[r.pi]} — ${r.games} juegos\n`;});
+    order.forEach((r,pos)=>{t+=`${escArrow(ci,pos<2)} ${e.players[r.pi]} — ${r.games} juegos\n`;});
   });
+  t+=`\n⬆️ sube · = se mantiene · ⬇️ baja`;
   share(t);
 }
 function escShareTable(){
@@ -1780,7 +1789,7 @@ function escShareTable(){
 migrate();
 cloudConnect();
 purgeOldTrash();
-logEvent('app:abierta','v17');
+logEvent('app:abierta','v18');
 goHome();
 if('serviceWorker'in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
