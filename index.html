@@ -1559,7 +1559,7 @@ function escSetScore(w,ci,si,team,val){
   saveTournamentLocal(currentEsc);
   cloudPushScoreKey(currentEsc.id,k,a,b);
   logEvent('escalera:set',currentEsc.id+' '+k+' '+(a==null&&b==null?'borrado':a+'-'+b));
-  renderEscalera();
+  escRefreshLive(); // actualiza en vivo SIN redibujar los casilleros (mantiene el teclado)
 }
 
 /* ---- Sorteo manual (semana 1) ---- */
@@ -1657,34 +1657,54 @@ function escWeekHtml(esc){
   else if(weekFilled(esc,w)===0)h+=`<button class="btn secondary" style="margin-top:0;margin-bottom:12px" onclick="escRedraw()">🎲 Rehacer sorteo</button>`;
   h+=escSubsHtml(esc,wk);
   courts.forEach((court,ci)=>{
-    const st=courtStandings(esc,w,ci);
-    const order = (wk.closed&&ranked) ? ranked[ci].map(pi=>st.find(x=>x.pi===pi)||{pi,games:0,dif:0}) : st;
     h+=`<div class="round-h"><span class="num">${ci+1}</span><span class="ttl">Cancha ${ci+1}</span></div>`;
-    h+=`<div class="card" style="padding:0;overflow:hidden"><table class="tbl-compact"><tbody>`;
-    order.forEach((r,pos)=>{const isTop=pos<2;
-      h+=`<tr class="${pos===0?'top1':''}"><td class="n">${pos+1}</td><td class="nm-cell">${esc2(escPlayerName(esc,w,r.pi))}</td>
-        <td class="pts" style="text-align:right">${r.games}</td>
-        <td style="text-align:right;font-size:10px;color:${isTop?'var(--green-l)':'var(--muted)'}">${escFate(ci,isTop)}</td></tr>`;});
-    h+=`</tbody></table></div>`;
+    h+=`<div class="card" id="escStand-${ci}" style="padding:0;overflow:hidden">${escStandCard(esc,w,ci,wk,ranked)}</div>`;
     courtSets(court).forEach((set,si)=>{
       const sc=escGetScore(esc,w,ci,si)||{};
       const aw=sc.a!=null&&sc.b!=null&&sc.a>sc.b, bw=sc.a!=null&&sc.b!=null&&sc.b>sc.a;
       h+=`<div class="match"><div class="court">Set ${si+1}</div>
-        <div class="team ${aw?'win':''}"><span class="names">${esc2(escPlayerName(esc,w,set.teamA[0]))} & ${esc2(escPlayerName(esc,w,set.teamA[1]))}</span>
+        <div class="team ${aw?'win':''}" id="escTeam-${ci}-${si}-A"><span class="names">${esc2(escPlayerName(esc,w,set.teamA[0]))} & ${esc2(escPlayerName(esc,w,set.teamA[1]))}</span>
           <span class="sc">${escCellHtml(esc,w,ci,si,'A',wk.closed)}</span></div>
         <div class="vs">VS · juegos del set</div>
-        <div class="team ${bw?'win':''}"><span class="names">${esc2(escPlayerName(esc,w,set.teamB[0]))} & ${esc2(escPlayerName(esc,w,set.teamB[1]))}</span>
+        <div class="team ${bw?'win':''}" id="escTeam-${ci}-${si}-B"><span class="names">${esc2(escPlayerName(esc,w,set.teamB[0]))} & ${esc2(escPlayerName(esc,w,set.teamB[1]))}</span>
           <span class="sc">${escCellHtml(esc,w,ci,si,'B',wk.closed)}</span></div></div>`;
     });
   });
-  if(!wk.closed){
-    const filled=weekFilled(esc,w);
-    h+= filled===9
-      ? `<button class="btn" style="background:var(--card2);border:1px solid var(--gold);color:var(--gold)" onclick="escCloseConfirm()">🔒 Cerrar semana ${w+1} y armar la siguiente</button>`
-      : `<p class="muted center">Faltan ${9-filled} set(s) por cargar para poder cerrar la semana.</p>`;
-  }
+  h+=`<div id="escCloseArea">${escCloseAreaHtml(esc,w,wk)}</div>`;
   h+=`<button class="btn wa" onclick="escShare()">📤 Compartir resultados</button>`;
   return h;
+}
+function escStandCard(esc,w,ci,wk,ranked){
+  const st=courtStandings(esc,w,ci);
+  const order=(wk.closed&&ranked)?ranked[ci].map(pi=>st.find(x=>x.pi===pi)||{pi,games:0,dif:0}):st;
+  let h=`<table class="tbl-compact"><tbody>`;
+  order.forEach((r,pos)=>{const isTop=pos<2;
+    h+=`<tr class="${pos===0?'top1':''}"><td class="n">${pos+1}</td><td class="nm-cell">${esc2(escPlayerName(esc,w,r.pi))}</td>
+      <td class="pts" style="text-align:right">${r.games}</td>
+      <td style="text-align:right;font-size:10px;color:${isTop?'var(--green-l)':'var(--muted)'}">${escFate(ci,isTop)}</td></tr>`;});
+  return h+`</tbody></table>`;
+}
+function escCloseAreaHtml(esc,w,wk){
+  if(wk.closed)return '';
+  const filled=weekFilled(esc,w);
+  return filled===9
+    ? `<button class="btn" style="background:var(--card2);border:1px solid var(--gold);color:var(--gold)" onclick="escCloseConfirm()">🔒 Cerrar semana ${w+1} y armar la siguiente</button>`
+    : `<p class="muted center">Faltan ${9-filled} set(s) por cargar para poder cerrar la semana.</p>`;
+}
+// Actualiza mini-tablas, resaltado y botón SIN tocar los casilleros (no bota el teclado)
+function escRefreshLive(){
+  const esc=currentEsc,w=escWeekView,wk=esc.weeks[w];if(!wk)return;
+  const ranked=wkRanked(wk);
+  wkCourts(wk).forEach((court,ci)=>{
+    const el=document.getElementById('escStand-'+ci);if(el)el.innerHTML=escStandCard(esc,w,ci,wk,ranked);
+    courtSets(court).forEach((set,si)=>{
+      const sc=escGetScore(esc,w,ci,si)||{};
+      const aw=sc.a!=null&&sc.b!=null&&sc.a>sc.b, bw=sc.a!=null&&sc.b!=null&&sc.b>sc.a;
+      const ea=document.getElementById('escTeam-'+ci+'-'+si+'-A');if(ea)ea.className='team'+(aw?' win':'');
+      const eb=document.getElementById('escTeam-'+ci+'-'+si+'-B');if(eb)eb.className='team'+(bw?' win':'');
+    });
+  });
+  const ca=document.getElementById('escCloseArea');if(ca)ca.innerHTML=escCloseAreaHtml(esc,w,wk);
 }
 function escCellHtml(esc,w,ci,si,team,closed){
   const sc=escGetScore(esc,w,ci,si)||{};const v=team==='A'?sc.a:sc.b;
@@ -1760,7 +1780,7 @@ function escShareTable(){
 migrate();
 cloudConnect();
 purgeOldTrash();
-logEvent('app:abierta','v16');
+logEvent('app:abierta','v17');
 goHome();
 if('serviceWorker'in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
